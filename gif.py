@@ -256,8 +256,7 @@ def deinterlace_image(imageData, width):
         yield imageData[sy*width:(sy+1)*width]
 
 def decode_GIF(GIFHandle, rawHandle, args):
-    """Decode or validate GIF.
-    If decoding, write raw RGB data (RGBRGB...) to rawHandle."""
+    """Decode GIF into raw RGB data (bytes: RGBRGB...)."""
 
     info = read_GIF(GIFHandle)
 
