@@ -1,0 +1,52 @@
+# Warning: this script will DELETE files.
+
+clear
+
+rm -f test-out/*.data
+rm -f test-out/*.gif
+
+echo "=== Decoding ==="
+python3 gif.py test-in/triangle.gif test-out/triangle.data
+python3 gif.py test-in/wolf1.gif test-out/wolf1.data
+python3 gif.py test-in/wolf3.gif test-out/wolf3.data
+python3 gif.py test-in/wolf4.gif test-out/wolf4.data
+python3 gif.py test-in/wolf8.gif test-out/wolf8.data
+python3 gif.py test-in/wolf8-lace.gif test-out/wolf8-lace.data
+python3 gif.py test-in/doom.gif test-out/doom.data
+python3 gif.py test-in/big.gif test-out/big.data
+python3 gif.py test-in/anim.gif test-out/anim.data
+echo
+
+echo "=== Verifying decoded files ==="
+diff -q test-in/triangle.data test-out/triangle.data
+diff -q test-in/wolf1.data test-out/wolf1.data
+diff -q test-in/wolf3.data test-out/wolf3.data
+diff -q test-in/wolf4.data test-out/wolf4.data
+diff -q test-in/wolf8.data test-out/wolf8.data
+diff -q test-in/wolf8.data test-out/wolf8-lace.data
+diff -q test-in/doom.data test-out/doom.data
+diff -q test-in/big.data test-out/big.data
+diff -q test-in/anim.data test-out/anim.data
+echo
+
+echo "=== Encoding ==="
+python3 gif.py test-in/triangle.data 202 test-out/triangle.gif
+python3 gif.py test-in/wolf1.data 320 test-out/wolf1.gif
+python3 gif.py test-in/wolf3.data 320 test-out/wolf3.gif
+python3 gif.py test-in/wolf4.data 320 test-out/wolf4.gif
+python3 gif.py test-in/wolf8.data 320 test-out/wolf8.gif
+python3 gif.py test-in/doom.data 320 test-out/doom.gif
+python3 gif.py test-in/big.data 526 test-out/big.gif
+echo
+
+echo "=== Source GIFs ==="
+ls -lSr test-in/*.gif
+echo
+
+echo "=== Target GIFs ==="
+ls -lSr test-out/*.gif
+echo
+
+echo "=== Note: also verify test-out/*.gif manually ==="
+echo
+
