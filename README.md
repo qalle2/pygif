@@ -18,17 +18,21 @@ Encoder:
 ## Help text
 
 ```
-Decodes a GIF file into raw RGB data or encodes raw RGB data into a GIF file.
-(Bytes in raw RGB data: RGBRGB...; order of pixels: first right, then down;
-file extension ".data" in GIMP.)
+usage: gif.py [-h] [-o {d,e}] [-w WIDTH] [-l] input_file output_file
 
-Arguments when decoding: SOURCE TARGET
-    SOURCE = GIF file to read
-    TARGET = raw RGB data file to write
+Decode/encode a GIF file into/from raw RGB data (bytes: RGBRGB...; order of
+pixels: first right, then down; file extension '.data' in GIMP).
 
-Arguments when encoding: SOURCE WIDTH TARGET
-    SOURCE = raw RGB data file to read
-    WIDTH  = width of SOURCE in pixels
-    TARGET = GIF file to write
+positional arguments:
+  input_file            File to read.
+  output_file           File to write.
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -o {d,e}, --operation {d,e}
+                        What to do (d=decode, e=encode). Required.
+  -w WIDTH, --width WIDTH
+                        Width of input file in pixels (encoding only).
+  -l, --log             Print decode/encode log.
 ```
 
