@@ -6,24 +6,17 @@ Notes:
     LSD = Logical Screen Descriptor
     LZW = Lempel-Ziv-Welch"""
 
+import argparse
 import math
 import os
 import struct
 import sys
 
-HELP_TEXT = """\
-Decodes a GIF file into raw RGB data or encodes raw RGB data into a GIF file.
-(Bytes in raw RGB data: RGBRGB...; order of pixels: first right, then down;
-file extension ".data" in GIMP.)
+class GIFError(Exception):
+    """An exception for GIF-related errors."""
 
-Arguments when decoding: SOURCE TARGET
-    SOURCE = GIF file to read
-    TARGET = raw RGB data file to write
-
-Arguments when encoding: SOURCE WIDTH TARGET
-    SOURCE = raw RGB data file to read
-    WIDTH  = width of SOURCE in pixels
-    TARGET = GIF file to write"""
+class RGBError(Exception):
+    """An exception for errors related to raw RGB files."""
 
 # --- Decoding ------------------------------------------------------------------------------------
 
@@ -32,7 +25,7 @@ def read_bytes(handle, length):
 
     data = handle.read(length)
     if len(data) < length:
-        raise Exception("EOF")
+        raise GIFError("EOF")
     return data
 
 def skip_bytes(handle, length):
@@ -41,7 +34,7 @@ def skip_bytes(handle, length):
     origPos = handle.tell()
     handle.seek(length, 1)
     if handle.tell() - origPos < length:
-        raise Exception("EOF")
+        raise GIFError("EOF")
 
 def read_subblocks(handle):
     """Generate data from GIF subblocks."""
@@ -66,7 +59,7 @@ def read_image_info(handle):
 
     (width, height, packedFields) = struct.unpack("<4x2HB", read_bytes(handle, 9))
     if min(width, height) == 0:
-        raise Exception("IMAGE_AREA_ZERO")
+        raise GIFError("IMAGE_AREA_ZERO")
 
     if packedFields >> 7:  # LCT?
         LCTAddr = handle.tell()
@@ -78,7 +71,7 @@ def read_image_info(handle):
 
     LZWPalBits = read_bytes(handle, 1)[0]
     if not 2 <= LZWPalBits <= 11:
-        raise Exception("INVALID_LZW_PALETTE_BIT_DEPTH")
+        raise GIFError("INVALID_LZW_PALETTE_BIT_DEPTH")
 
     return {
         "width":      width,
@@ -100,7 +93,7 @@ def skip_extension_block(handle):
         skip_bytes(handle, read_bytes(handle, 1)[0])
     elif label != 0xfe:
         # not Comment Extension
-        raise Exception("INVALID_EXTENSION_LABEL")
+        raise GIFError("INVALID_EXTENSION_LABEL")
     skip_subblocks(handle)
 
 def read_first_image_info(handle):
@@ -117,7 +110,7 @@ def read_first_image_info(handle):
         elif blockType == b";":  # Trailer
             return None
         else:
-            raise Exception("INVALID_BLOCK_TYPE")
+            raise GIFError("INVALID_BLOCK_TYPE")
 
 def read_GIF(handle):
     """Read information of GIF file (first image only)."""
@@ -128,7 +121,7 @@ def read_GIF(handle):
     (id_, version, packedFields) = struct.unpack("<3s3s4xB2x", read_bytes(handle, 13))
 
     if id_ != b"GIF":
-        raise Exception("NOT_A_GIF_FILE")
+        raise GIFError("NOT_A_GIF_FILE")
     if version not in (b"87a", b"89a"):
         print("Warning: unknown GIF version.", file=sys.stderr)
 
@@ -143,14 +136,14 @@ def read_GIF(handle):
 
     imageInfo = read_first_image_info(handle)
     if imageInfo is None:
-        raise Exception("NO_IMAGES_IN_FILE")
+        raise GIFError("NO_IMAGES_IN_FILE")
 
     if imageInfo["LCTAddr"] is not None:
         # use LCT instead of GCT
         palAddr = imageInfo["LCTAddr"]
         palBits = imageInfo["LCTBits"]
     elif palAddr is None:
-        raise Exception("NO_PALETTE")
+        raise GIFError("NO_PALETTE")
 
     return {
         "width":      imageInfo["width"],
@@ -162,29 +155,30 @@ def read_GIF(handle):
         "LZWAddr":    imageInfo["LZWAddr"],     # LZW data address
     }
 
-def decode_LZW_data(LZWData, palBits):
+def decode_LZW_data(LZWData, palBits, args):
     """Decode LZW data (bytes).
-    palBits: palette bit depth in LZW encoding
+    palBits: palette bit depth in LZW encoding (2...8)
+    args: from argparse
     generate: indexed image data as bytes (1 byte/pixel)"""
 
     # constants
-    clearCode = 1 << palBits      # LZW clear code
-    endCode = clearCode + 1       # LZW end code
-    initialCodeLen = palBits + 1  # initial length of LZW codes
-    maxCodeLen = 12               # maximum length of LZW codes
-    initialDictLen = endCode + 1  # initial length of LZW dictionary
+    minCodeLen = palBits + 1    # initial length of LZW codes (3...9)
+    maxCodeLen = 12             # maximum length of LZW codes
+    clearCode  = 1 << palBits   # LZW clear code
+    endCode    = clearCode + 1  # LZW end code
+    minDictLen = clearCode + 2  # initial length of LZW dictionary
 
     # variables
-    bytePos = 0               # byte position in LZW data
-    bitPos = 0                # bit  position in LZW data
-    codeLen = initialCodeLen  # length of LZW codes
-    entry = bytearray()       # entry to output
+    bytePos = 0            # byte position in LZW data
+    bitPos  = 0            # bit  position in LZW data
+    codeLen = minCodeLen   # length of LZW codes
+    entry   = bytearray()  # entry to output
     # LZW dictionary; index: code, value: entry (reference to another code, final byte)
-    LZWDict = [(-1, i) for i in range(initialDictLen)]
+    LZWDict = [(-1, i) for i in range(minDictLen)]
 
     while True:
         if bitPos + codeLen > (len(LZWData) - bytePos) << 3:
-            raise Exception("EOF")
+            raise GIFError("EOF")
 
         # read code
         code = LZWData[bytePos]
@@ -194,14 +188,16 @@ def decode_LZW_data(LZWData, palBits):
                 code |= LZWData[bytePos+2] << 16
         code >>= bitPos
         code &= (1 << codeLen) - 1
+        if args.log:
+            print(format(code, f"0{codeLen}b"))
 
         bitPos += codeLen
         bytePos += bitPos >> 3
         bitPos &= 7
 
         if code == clearCode:
-            LZWDict = LZWDict[:initialDictLen]
-            codeLen = initialCodeLen
+            LZWDict = LZWDict[:minDictLen]
+            codeLen = minCodeLen
             prevCode = None
         elif code == endCode:
             break
@@ -214,7 +210,7 @@ def decode_LZW_data(LZWData, palBits):
                 elif code == len(LZWDict):
                     suffixCode = prevCode
                 else:
-                    raise Exception("INVALID_LZW_CODE")
+                    raise GIFError("INVALID_LZW_CODE")
                 # get first byte of entry
                 while suffixCode != -1:
                     (suffixCode, suffixByte) = LZWDict[suffixCode]
@@ -259,8 +255,9 @@ def deinterlace_image(imageData, width):
             sy = group4Start + dy // 2
         yield imageData[sy*width:(sy+1)*width]
 
-def GIF_to_raw_image(GIFHandle, rawHandle):
-    """Convert GIF into raw RGB data (bytes: RGBRGB...)."""
+def decode_GIF(GIFHandle, rawHandle, args):
+    """Decode or validate GIF.
+    If decoding, write raw RGB data (RGBRGB...) to rawHandle."""
 
     info = read_GIF(GIFHandle)
 
@@ -271,9 +268,9 @@ def GIF_to_raw_image(GIFHandle, rawHandle):
     imageData = b"".join(read_subblocks(GIFHandle))
 
     # decode image data
-    imageData = b"".join(decode_LZW_data(imageData, info["LZWPalBits"]))
+    imageData = b"".join(decode_LZW_data(imageData, info["LZWPalBits"], args))
     if info["palBits"] < 8 and max(imageData) >= 2 ** info["palBits"]:
-        raise Exception("INVALID_INDEX_IN_IMAGE_DATA")
+        raise GIFError("INVALID_INDEX_IN_IMAGE_DATA")
 
     if info["interlace"]:
         # deinterlace
@@ -282,10 +279,11 @@ def GIF_to_raw_image(GIFHandle, rawHandle):
     # convert palette into a tuple of 3-byte colors
     palette = tuple(palette[pos:pos+3] for pos in range(0, len(palette), 3))
 
-    # write raw RGB data
-    rawHandle.seek(0)
-    for i in imageData:
-        rawHandle.write(palette[i])
+    if args.operation == "d":
+        # write raw RGB data
+        rawHandle.seek(0)
+        for i in imageData:
+            rawHandle.write(palette[i])
 
 # --- Encoding ------------------------------------------------------------------------------------
 
@@ -304,7 +302,7 @@ def get_palette_from_raw_image(handle):
     for color in read_raw_image(handle):
         palette.add(color)
         if len(palette) > 256:
-            raise Exception("TOO_MANY_COLORS")
+            raise RGBError("TOO_MANY_COLORS")
     return b"".join(sorted(palette))
 
 def raw_image_to_indexed(handle, palette):
@@ -320,29 +318,29 @@ def get_palette_bit_depth(colorCount):
 
     return max(math.ceil(math.log2(colorCount)), 1)
 
-def encode_LZW_data(palette, imageData):
+def encode_LZW_data(palette, imageData, args):
     """Encode image data (1 byte/pixel) using LZW and palette (bytes: RGBRGB...).
-    Generate bytes."""
+    args: from argparse. Generate bytes."""
 
     # note: encodes wolf3.gif and wolf4.gif in a different way than GIMP
 
     # constants
-    palBits = max(get_palette_bit_depth(len(palette) // 3), 2)  # palette bit depth in encoding
-    minCodeLen = palBits + 1  # minimum length of LZW codes
-    maxCodeLen = 12           # maximum length of LZW codes
-    clearCode = 1 << palBits  # LZW clear code
-    endCode = clearCode + 1   # LZW end code
-    palSize = clearCode       # length of palette
+    palBits    = max(get_palette_bit_depth(len(palette) // 3), 2)  # palette bit depth in encoding
+    minCodeLen = palBits + 1   # minimum length of LZW codes
+    maxCodeLen = 12            # maximum length of LZW codes
+    palSize    = 1 << palBits  # length of palette
+    clearCode  = palSize       # LZW clear code
+    endCode    = palSize + 1   # LZW end code
 
     # variables
-    inputPos = 0          # position in input
-    codeLen = minCodeLen  # length of LZW codes
-    LZWByte = 0           # next byte to output
-    LZWBitPos = 0         # number of bits in LZWByte
+    inputPos  = 0            # position in input
+    codeLen   = minCodeLen   # length of LZW codes
+    LZWByte   = 0            # next byte to output
+    LZWBitPos = 0            # number of bits in LZWByte
+    entry     = bytearray()  # LZW dictionary entry
     # LZW dictionary: {entry: code, ...}; note: doesn't contain clear and end codes,
     # so the actual length is len() + 2
     LZWDict = dict((bytes((i,)), i) for i in range(palSize))
-    entry = bytearray()  # prefix of remaining image data to search for in dictionary
 
     # output clear code
     LZWByte = clearCode
@@ -351,6 +349,8 @@ def encode_LZW_data(palette, imageData):
         yield LZWByte & 0xff
         LZWByte >>= 8
         LZWBitPos -= 8
+    if args.log:
+        print(format(clearCode, f"0{codeLen}b"))
 
     while inputPos < len(imageData):
         # find longest entry that's a prefix of remaining image data, and corresponding code
@@ -364,13 +364,15 @@ def encode_LZW_data(palette, imageData):
                 break
         inputPos += len(entry)
 
-        # yield code
+        # output code
         LZWByte |= code << LZWBitPos
         LZWBitPos += codeLen
         while LZWBitPos >= 8:
             yield LZWByte & 0xff
             LZWByte >>= 8
             LZWBitPos -= 8
+        if args.log:
+            print(format(code, f"0{codeLen}b"))
 
         if inputPos < len(imageData):
             if len(LZWDict) + 2 < (1 << maxCodeLen):
@@ -382,24 +384,28 @@ def encode_LZW_data(palette, imageData):
                     codeLen += 1
             else:
                 # dictionary is full
-                # yield clear code
+                # output clear code
                 LZWByte |= clearCode << LZWBitPos
                 LZWBitPos += codeLen
                 while LZWBitPos >= 8:
                     yield LZWByte & 0xff
                     LZWByte >>= 8
                     LZWBitPos -= 8
+                if args.log:
+                    print(format(clearCode, f"0{codeLen}b"))
                 # initialize dictionary
                 LZWDict = dict((bytes((i,)), i) for i in range(palSize))
                 codeLen = minCodeLen
 
-    # yield end code
+    # output end code
     LZWByte |= endCode << LZWBitPos
     LZWBitPos += codeLen
     while LZWBitPos > 0:
         yield LZWByte & 0xff
         LZWByte >>= 8
         LZWBitPos -= 8
+    if args.log:
+        print(format(endCode, f"0{codeLen}b"))
 
 def write_GIF(width, height, palette, LZWData, handle):
     """Write a GIF file (version 87a, with GCT, one image).
@@ -433,54 +439,87 @@ def write_GIF(width, height, palette, LZWData, handle):
     # empty subblock and Trailer
     handle.write(b"\x00;")
 
-def raw_image_to_GIF(rawHandle, width, GIFHandle):
-    """Convert raw RGB image (bytes: RGBRGB...) into GIF."""
+def encode_GIF(rawHandle, GIFHandle, args):
+    """Convert raw RGB image (bytes: RGBRGB...) into GIF.
+    args: from argparse"""
 
-    (height, remainder) = divmod(rawHandle.seek(0, 2), width * 3)
+    (height, remainder) = divmod(rawHandle.seek(0, 2), args.width * 3)
 
     if remainder:
-        sys.exit("Input file size is not a multiple of (width * 3).")
+        raise RGBError("FILE_SIZE_NOT_DIVISIBLE_BY_WIDTH_TIMES_THREE")
     if height == 0:
-        sys.exit("Input file is empty.")
+        raise RGBError("FILE_EMPTY")
     if height > 65535:
-        sys.exit("Output file would become too tall.")
+        raise RGBError("IMAGE_TOO_TALL")
 
     palette = get_palette_from_raw_image(rawHandle)
     imageData = bytes(raw_image_to_indexed(rawHandle, palette))
-    LZWData = bytes(encode_LZW_data(palette, imageData))
-    write_GIF(width, height, palette, LZWData, GIFHandle)
+    LZWData = bytes(encode_LZW_data(palette, imageData, args))
+    write_GIF(args.width, height, palette, LZWData, GIFHandle)
 
-# --- Main ----------------------------------------------------------------------------------------
+# --- Common --------------------------------------------------------------------------------------
 
-def main():
-    if len(sys.argv) == 3:
-        decode = True
-        (source, target) = sys.argv[1:]
-    elif len(sys.argv) == 4:
-        decode = False
-        (source, width, target) = sys.argv[1:]
-        try:
-            width = int(width, 10)
-            if not 1 <= width <= 65535:
-                raise ValueError
-        except ValueError:
-            sys.exit("Width must be 1...65535.")
-    else:
-        exit(HELP_TEXT)
+def parse_arguments():
+    """Parse command line arguments using argparse."""
 
-    if not os.path.isfile(source):
+    parser = argparse.ArgumentParser(
+        description="Decode/encode a GIF file into/from raw RGB data (bytes: RGBRGB...; "
+        "order of pixels: first right, then down; file extension '.data' in GIMP)."
+    )
+
+    parser.add_argument(
+        "-o", "--operation", choices=("d", "e"),
+        help="What to do (d=decode, e=encode). Required."
+    )
+    parser.add_argument(
+        "-w", "--width", type=int,
+        help="Width of input file in pixels (encoding only)."
+    )
+    parser.add_argument(
+        "-l", "--log", action="store_true",
+        help="Print decode/encode log."
+    )
+    parser.add_argument(
+        "input_file",
+        help="File to read."
+    )
+    parser.add_argument(
+        "output_file",
+        help="File to write."
+    )
+
+    args = parser.parse_args()
+
+    if args.operation is None:
+        sys.exit("-o/--operation argument is required.")
+    if args.operation == "e":
+        if args.width is None:
+            sys.exit("-w/--width is required when encoding.")
+        elif not 1 <= args.width <= 65535:
+            sys.exit("Invalid width.")
+
+    if not os.path.isfile(args.input_file):
         sys.exit("Input file not found.")
-    if os.path.exists(target):
+    if os.path.exists(args.output_file):
         sys.exit("Output file already exists.")
 
+    return args
+
+def main():
+    args = parse_arguments()
+
     try:
-        with open(source, "rb") as sourceHnd, open(target, "wb") as targetHnd:
-            if decode:
-                GIF_to_raw_image(sourceHnd, targetHnd)
+        with open(args.input_file, "rb") as sourceHnd, open(args.output_file, "wb") as targetHnd:
+            if args.operation == "d":
+                decode_GIF(sourceHnd, targetHnd, args)
             else:
-                raw_image_to_GIF(sourceHnd, width, targetHnd)
+                encode_GIF(sourceHnd, targetHnd, args)
     except OSError:
-        exit("Error reading/writing files.")
+        sys.exit("Error reading/writing files.")
+    except GIFError as error:
+        sys.exit(f"GIF error: {error}")
+    except RGBError as error:
+        sys.exit(f"Raw RGB data error: {error}")
 
 if __name__ == "__main__":
     main()
