@@ -2,7 +2,6 @@
 GIF decoder/encoder in pure Python.
 
 ## Features
-
 Decoder:
 * supports interlaced images
 * only extracts the first image from a file
@@ -16,7 +15,6 @@ Encoder:
 * uses a lot of RAM
 
 ## Help text
-
 ```
 usage: gif.py [-h] [-o {d,e}] [-w WIDTH] [-l] input_file output_file
 
