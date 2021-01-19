@@ -155,64 +155,84 @@ def read_gif(handle):
         "lzwAddr":    imageInfo["lzwAddr"],     # LZW data address
     }
 
-def decode_lzw_data(LZW_DATA, PAL_BITS, ARGS):
-    """Decode LZW data (bytes).
-    PAL_BITS: palette bit depth in LZW encoding (2...8)
-    ARGS: from argparse
-    generate: indexed image data as bytes (1 byte/pixel)"""
+def lzw_bytes_to_codes(data, palBits):
+    """Generate LZW codes (int) from LZW data (bytes).
+    palBits: palette bit depth in LZW encoding (2...8)"""
 
-    # Note: constants are named LIKE_THIS in this function.
-
-    # constants
-    MIN_CODE_LEN = PAL_BITS + 1       # initial length of LZW codes (3...9)
-    MAX_CODE_LEN = 12                 # maximum length of LZW codes
-    PAL_SIZE     = 1 << PAL_BITS      # number of palette indexes in LZW encoding
-    CLEAR_CODE   = PAL_SIZE           # LZW clear code
-    END_CODE     = PAL_SIZE + 1       # LZW end code
-    MIN_DICT_LEN = PAL_SIZE + 2       # initial length of LZW dictionary
-    MAX_DICT_LEN = 1 << MAX_CODE_LEN  # maximum length of LZW dictionary
-
-    # variables
-    pos         = 0               # number of bytes completely read from LZW data
-    bitPos      = 0               # number of bits read from next byte in LZW data
-    codeLen     = MIN_CODE_LEN    # length of LZW codes
-    maxDictLen  = 1 << codeLen    # maximum number of codes *with current codeLen*
-    codeBitmask = maxDictLen - 1  # AND bitmask for reading codes
-    entry       = bytearray()     # entry to output
-    # LZW dictionary; index: code, value: entry (reference to another code, final byte)
-    lzwDict = [(-1, i) for i in range(MIN_DICT_LEN)]
+    pos     = 0                   # number of bytes completely read from LZW data
+    bitPos  = 0                   # number of bits read from next byte in LZW data
+    codeLen = palBits + 1         # length of LZW codes
+    dictLen = (1 << palBits) + 2  # length of simulated LZW dictionary
+    willAddEntry = False          # simulate adding a dictionary entry with next code?
 
     while True:
-        # read next code from remaining LZW data
+        # read next code from remaining data
         # combine 1...3 bytes in reverse order, e.g. 0xab 0xcd -> 0xcdab
         code = 0
         shiftCount = 0
         for offset in range((bitPos + codeLen + 7) >> 3):  # ceil((bitPos + codeLen) / 8)
             try:
-                code |= LZW_DATA[pos+offset] << shiftCount
+                code |= data[pos+offset] << shiftCount
             except IndexError:
                 raise GifError("EOF")
             shiftCount += 8
         # delete previously-read bits from end and unnecessary bits from beginning
-        code = (code >> bitPos) & codeBitmask
-        if ARGS.log:
-            print(format(code, f"0{codeLen}b"))
+        code = (code >> bitPos) & ((1 << codeLen) - 1)
 
-        # advance in LZW data
+        # advance in data
         bitPos += codeLen
         pos += bitPos >> 3
         bitPos &= 7
 
-        if code == CLEAR_CODE:
-            # reset code length
-            codeLen     = MIN_CODE_LEN
-            maxDictLen  = 1 << codeLen
-            codeBitmask = maxDictLen - 1
-            # reset dictionary
-            lzwDict = lzwDict[:MIN_DICT_LEN]
+        yield code
+
+        if code == 1 << palBits:
+            # clear code
+            # reset code and dictionary length, don't add dictionary entry with next code
+            codeLen = palBits + 1
+            dictLen = (1 << palBits) + 2
+            willAddEntry = False
+        elif code == (1 << palBits) + 1:
+            # end code
+            break
+        else:
+            # dictionary entry
+            if willAddEntry:
+                # simulate adding a dictionary entry
+                if code > dictLen:
+                    raise GifError("INVALID_LZW_CODE")
+                dictLen += 1
+                willAddEntry = False
+            if code < dictLen < 1 << 12:
+                willAddEntry = True
+            if dictLen == 1 << codeLen and codeLen < 12:
+                codeLen += 1
+
+def lzw_decode(data, palBits, args):
+    """Decode LZW data (bytes).
+    palBits: palette bit depth in LZW encoding (2...8)
+    args: from argparse
+    generate: indexed image data as bytes (1 byte/pixel)"""
+
+    codeLen    = palBits + 1  # length of LZW codes
+    entry      = bytearray()  # entry to output
+    codeCount  = 0            # codes read
+    pixelCount = 0            # pixels output
+
+    # LZW dictionary; index: code, value: entry (reference to another code, final byte)
+    lzwDict = [(-1, i) for i in range((1 << palBits) + 2)]
+
+    for code in lzw_bytes_to_codes(data, palBits):
+        codeCount += 1
+
+        if code == 1 << palBits:
+            # clear code; reset code and dictionary length
+            codeLen = palBits + 1
+            lzwDict = lzwDict[:(1<<palBits)+2]
             # don't add an entry to dictionary on next round
             prevCode = None
-        elif code == END_CODE:
+        elif code == (1 << palBits) + 1:
+            # end code
             break
         else:
             # dictionary entry
@@ -230,18 +250,23 @@ def decode_lzw_data(LZW_DATA, PAL_BITS, ARGS):
                 # add entry to dictionary
                 lzwDict.append((prevCode, suffixByte))
                 prevCode = None
-            if code < len(lzwDict) < MAX_DICT_LEN:
+            if code < len(lzwDict) < 1 << 12:
                 prevCode = code
-            if len(lzwDict) == maxDictLen and codeLen < MAX_CODE_LEN:
+            if len(lzwDict) == 1 << codeLen and codeLen < 12:
                 codeLen += 1
-                maxDictLen  = 1 << codeLen
-                codeBitmask = maxDictLen - 1
-            # emit current entry
+            # output current entry
             entry.clear()
             while code != -1:
-                (code, byte) = lzwDict[code]
+                try:
+                    (code, byte) = lzwDict[code]
+                except IndexError:
+                    raise GifError("INVALID_LZW_CODE")
                 entry.append(byte)
             yield entry[::-1]
+            pixelCount += len(entry)
+
+    if args.verbose:
+        print(f"Decoded {codeCount} LZW codes into {pixelCount} pixels.")
 
 def deinterlace_image(imageData, width):
     """Deinterlace image data (bytes, 1 byte/pixel).
@@ -282,7 +307,7 @@ def decode_gif(gifHandle, rawHandle, args):
     imageData = b"".join(read_subblocks(gifHandle))
 
     # decode image data
-    imageData = b"".join(decode_lzw_data(imageData, info["lzwPalBits"], args))
+    imageData = b"".join(lzw_decode(imageData, info["lzwPalBits"], args))
     if info["palBits"] < 8 and max(imageData) >= 2 ** info["palBits"]:
         raise GifError("INVALID_INDEX_IN_IMAGE_DATA")
 
@@ -332,102 +357,89 @@ def get_palette_bit_depth(colorCount):
 
     return max(math.ceil(math.log2(colorCount)), 1)
 
-def encode_lzw_data(PALETTE, IMAGE_DATA, ARGS):
+def lzw_encode(palBits, imageData):
     """Encode image data (1 byte/pixel) using LZW and palette (bytes: RGBRGB...).
-    ARGS: from argparse. Generate bytes."""
+    palBits: palette bit depth in LZW encoding.
+    Generate: (LZW_code, LZW_code_length_in_bits)"""
 
-    # Note: constants are named LIKE_THIS in this function.
     # TODO: find out why this function encodes wolf3.gif and wolf4.gif different from GIMP.
 
-    # constants
-    # palette bit depth in encoding
-    PAL_BITS     = max(get_palette_bit_depth(len(PALETTE) // 3), 2)
-    MIN_CODE_LEN = PAL_BITS + 1       # minimum length of LZW codes
-    MAX_CODE_LEN = 12                 # maximum length of LZW codes
-    PAL_SIZE     = 1 << PAL_BITS      # length of palette
-    CLEAR_CODE   = PAL_SIZE           # LZW clear code
-    END_CODE     = PAL_SIZE + 1       # LZW end code
-    MAX_DICT_LEN = 1 << MAX_CODE_LEN  # maximum length of LZW dictionary
+    pos = 0             # position in input
+    codeLen  = palBits + 1  # length of LZW codes
+    entry    = bytearray()   # LZW dictionary entry
 
-    # variables
-    inputPos   = 0             # position in input
-    codeLen    = MIN_CODE_LEN  # length of LZW codes
-    maxDictLen = 1 << codeLen  # maximum number of codes *with current codeLen*
-    lzwByte    = 0             # next byte to output
-    lzwBitPos  = 0             # number of bits in LZWByte
-    entry      = bytearray()   # LZW dictionary entry
     # LZW dictionary: {entry: code, ...}; note: doesn't contain clear and end codes,
     # so the actual length is len() + 2
-    lzwDict = dict((bytes((i,)), i) for i in range(PAL_SIZE))
+    lzwDict = dict((bytes((i,)), i) for i in range(1 << palBits))
 
-    # output clear code
-    lzwByte = CLEAR_CODE
-    lzwBitPos = codeLen
-    while lzwBitPos >= 8:
-        yield lzwByte & 0xff
-        lzwByte >>= 8
-        lzwBitPos -= 8
-    if ARGS.log:
-        print(format(CLEAR_CODE, f"0{codeLen}b"))
+    yield (1 << palBits, codeLen)  # clear code
 
-    while inputPos < len(IMAGE_DATA):
+    while pos < len(imageData):
         # find longest entry that's a prefix of remaining image data, and corresponding code
         entry.clear()
-        for pos in range(inputPos, len(IMAGE_DATA)):
-            entry.append(IMAGE_DATA[pos])
+        for byte in imageData[pos:]:  # [pos:pos+1] breaks some decoders
+            entry.append(byte)
             try:
                 code = lzwDict[bytes(entry)]
             except KeyError:
                 entry = entry[:-1]
                 break
-        inputPos += len(entry)
 
-        # output code
-        lzwByte |= code << lzwBitPos
-        lzwBitPos += codeLen
-        while lzwBitPos >= 8:
-            yield lzwByte & 0xff
-            lzwByte >>= 8
-            lzwBitPos -= 8
-        if ARGS.log:
-            print(format(code, f"0{codeLen}b"))
+        yield (code, codeLen)  # code for dictionary entry
+        pos += len(entry)
 
-        if inputPos < len(IMAGE_DATA):
-            if len(lzwDict) + 2 < MAX_DICT_LEN:
-                # dictionary isn't full
-                # add entry: current entry plus next pixel
-                entry.append(IMAGE_DATA[inputPos])
+        if pos < len(imageData):
+            if len(lzwDict) == (1 << 12) - 2:
+                # dictionary is full
+                yield (1 << palBits, codeLen)  # clear code
+                # reinitialize code length and dictionary
+                codeLen = palBits + 1
+                lzwDict = dict((bytes((i,)), i) for i in range(1 << palBits))
+            else:
+                # add dictionary entry: current entry plus next pixel
+                entry.append(imageData[pos])
                 lzwDict[bytes(entry)] = len(lzwDict) + 2
                 # increase code length if necessary
-                if len(lzwDict) + 2 == maxDictLen + 1:
+                if len(lzwDict) + 2 == (1 << codeLen) + 1:
                     codeLen += 1
-                    maxDictLen = 1 << codeLen
-            else:
-                # dictionary is full
-                # output clear code
-                lzwByte |= CLEAR_CODE << lzwBitPos
-                lzwBitPos += codeLen
-                while lzwBitPos >= 8:
-                    yield lzwByte & 0xff
-                    lzwByte >>= 8
-                    lzwBitPos -= 8
-                if ARGS.log:
-                    print(format(CLEAR_CODE, f"0{codeLen}b"))
-                # reset code length
-                codeLen = MIN_CODE_LEN
-                maxDictLen = 1 << codeLen
-                # reset dictionary
-                lzwDict = dict((bytes((i,)), i) for i in range(PAL_SIZE))
 
-    # output end code
-    lzwByte |= END_CODE << lzwBitPos
-    lzwBitPos += codeLen
-    while lzwBitPos > 0:
-        yield lzwByte & 0xff
-        lzwByte >>= 8
-        lzwBitPos -= 8
-    if ARGS.log:
-        print(format(END_CODE, f"0{codeLen}b"))
+    yield ((1 << palBits) + 1, codeLen)  # end code
+
+def lzw_codes_to_bytes(paletteBits, imageData, args):
+    """Get LZW codes, generate LZW bytes."""
+
+    data    = 0   # LZW codes
+    dataLen = 0   # number of bits in data (max. 7 + 12 = 19)
+
+    # stats
+    codeCount    = 0
+    totalCodeLen = 0
+    minCodeLen   = 99
+    maxCodeLen   = 0
+
+    for (code, codeLen) in lzw_encode(paletteBits, imageData):
+        # prepend code to data; chop off full bytes from end of data
+        data |= code << dataLen
+        dataLen += codeLen
+        while dataLen >= 8:
+            yield data & 0xff
+            data >>= 8
+            dataLen -= 8
+        # update stats
+        codeCount += 1
+        totalCodeLen += codeLen
+        minCodeLen = min(codeLen, minCodeLen)
+        maxCodeLen = max(codeLen, maxCodeLen)
+
+    if dataLen:
+        # output last byte padded with zeroes
+        yield data
+
+    if args.verbose:
+        print(
+            f"Encoded {len(imageData)} pixels into {codeCount} LZW codes"
+            f" (bits: min={minCodeLen}, max={maxCodeLen}, total={totalCodeLen})."
+        )
 
 def write_gif(width, height, palette, lzwData, handle):
     """Write a GIF file (version 87a, with GCT, one image).
@@ -476,7 +488,8 @@ def encode_gif(rawHandle, gifHandle, args):
 
     palette = get_palette_from_raw_image(rawHandle)
     imageData = bytes(raw_image_to_indexed(rawHandle, palette))
-    lzwData = bytes(encode_lzw_data(palette, imageData, args))
+    paletteBits = max(get_palette_bit_depth(len(palette) // 3), 2)  # in LZW encoding
+    lzwData = bytes(lzw_codes_to_bytes(paletteBits, imageData, args))
     write_gif(args.width, height, palette, lzwData, gifHandle)
 
 # --- Common --------------------------------------------------------------------------------------
@@ -498,8 +511,8 @@ def parse_arguments():
         help="Width of input file in pixels (encoding only)."
     )
     parser.add_argument(
-        "-l", "--log", action="store_true",
-        help="Print decode/encode log."
+        "-v", "--verbose", action="store_true",
+        help="Print more info."
     )
     parser.add_argument(
         "input_file",
