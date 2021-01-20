@@ -156,14 +156,15 @@ def read_gif(handle):
     }
 
 def lzw_bytes_to_codes(data, palBits):
-    """Generate LZW codes (int) from LZW data (bytes).
-    palBits: palette bit depth in LZW encoding (2...8)"""
+    """Decode LZW data (bytes).
+    palBits: palette bit depth in LZW encoding (2...8)
+    generate: (LZW_code, code_length_in_bits, code_for_previous_dictionary_entry)"""
 
-    pos     = 0                   # number of bytes completely read from LZW data
-    bitPos  = 0                   # number of bits read from next byte in LZW data
-    codeLen = palBits + 1         # length of LZW codes
-    dictLen = (1 << palBits) + 2  # length of simulated LZW dictionary
-    willAddEntry = False          # simulate adding a dictionary entry with next code?
+    pos      = 0                   # number of bytes completely read from LZW data
+    bitPos   = 0                   # number of bits read from next byte in LZW data
+    codeLen  = palBits + 1         # length of LZW codes
+    dictLen  = (1 << palBits) + 2  # length of simulated LZW dictionary
+    prevCode = None                # previous code for dictionary entry or None
 
     while True:
         # read next code from remaining data
@@ -184,52 +185,13 @@ def lzw_bytes_to_codes(data, palBits):
         pos += bitPos >> 3
         bitPos &= 7
 
-        yield code
+        yield (code, codeLen, prevCode)
 
         if code == 1 << palBits:
             # clear code
             # reset code and dictionary length, don't add dictionary entry with next code
             codeLen = palBits + 1
             dictLen = (1 << palBits) + 2
-            willAddEntry = False
-        elif code == (1 << palBits) + 1:
-            # end code
-            break
-        else:
-            # dictionary entry
-            if willAddEntry:
-                # simulate adding a dictionary entry
-                if code > dictLen:
-                    raise GifError("INVALID_LZW_CODE")
-                dictLen += 1
-                willAddEntry = False
-            if code < dictLen < 1 << 12:
-                willAddEntry = True
-            if dictLen == 1 << codeLen and codeLen < 12:
-                codeLen += 1
-
-def lzw_decode(data, palBits, args):
-    """Decode LZW data (bytes).
-    palBits: palette bit depth in LZW encoding (2...8)
-    args: from argparse
-    generate: indexed image data as bytes (1 byte/pixel)"""
-
-    codeLen    = palBits + 1  # length of LZW codes
-    entry      = bytearray()  # entry to output
-    codeCount  = 0            # codes read
-    pixelCount = 0            # pixels output
-
-    # LZW dictionary; index: code, value: entry (reference to another code, final byte)
-    lzwDict = [(-1, i) for i in range((1 << palBits) + 2)]
-
-    for code in lzw_bytes_to_codes(data, palBits):
-        codeCount += 1
-
-        if code == 1 << palBits:
-            # clear code; reset code and dictionary length
-            codeLen = palBits + 1
-            lzwDict = lzwDict[:(1<<palBits)+2]
-            # don't add an entry to dictionary on next round
             prevCode = None
         elif code == (1 << palBits) + 1:
             # end code
@@ -237,24 +199,52 @@ def lzw_decode(data, palBits, args):
         else:
             # dictionary entry
             if prevCode is not None:
-                # entry to take first byte from for new dictionary entry
-                if code < len(lzwDict):
-                    suffixCode = code
-                elif code == len(lzwDict):
-                    suffixCode = prevCode
-                else:
+                # simulate adding a dictionary entry
+                if code > dictLen:
                     raise GifError("INVALID_LZW_CODE")
+                dictLen += 1
+                prevCode = None
+            if code < dictLen < 1 << 12:
+                prevCode = code
+            if dictLen == 1 << codeLen and codeLen < 12:
+                codeLen += 1
+
+def lzw_decode(data, palBits, args):
+    """Generate indexed image data (bytes) from LZW data (bytes).
+    palBits: palette bit depth in LZW encoding (2...8)
+    args: from argparse"""
+
+    #codeLen = palBits + 1  # length of LZW codes
+    entry   = bytearray()  # entry to output
+
+    # stats
+    codeCount    = 0  # codes read
+    totalCodeLen = 0  # bits read
+    pixelCount   = 0  # pixels output
+
+    # LZW dictionary; index: code, value: entry (reference to another code, final byte)
+    lzwDict = [(-1, i) for i in range((1 << palBits) + 2)]
+
+    # note: lzw_bytes_to_codes() does the dirty work; we just do dictionary-related stuff here
+    for (code, codeLen, prevCode) in lzw_bytes_to_codes(data, palBits):
+        codeCount += 1
+        totalCodeLen += codeLen
+
+        if code == 1 << palBits:
+            # clear code
+            # reset dictionary, don't add a dictionary entry on next code
+            lzwDict = lzwDict[:(1<<palBits)+2]
+        elif code != (1 << palBits) + 1:
+            # dictionary entry (not end code)
+            if prevCode is not None:
+                # entry to take first byte from for new dictionary entry
+                suffixCode = code if code < len(lzwDict) else prevCode
                 # get first byte of entry
                 while suffixCode != -1:
                     (suffixCode, suffixByte) = lzwDict[suffixCode]
                 # add entry to dictionary
                 lzwDict.append((prevCode, suffixByte))
-                prevCode = None
-            if code < len(lzwDict) < 1 << 12:
-                prevCode = code
-            if len(lzwDict) == 1 << codeLen and codeLen < 12:
-                codeLen += 1
-            # output current entry
+            # output entry
             entry.clear()
             while code != -1:
                 try:
@@ -266,7 +256,7 @@ def lzw_decode(data, palBits, args):
             pixelCount += len(entry)
 
     if args.verbose:
-        print(f"Decoded {codeCount} LZW codes into {pixelCount} pixels.")
+        print(f"Decoded {codeCount} LZW codes ({totalCodeLen} bits) into {pixelCount} pixels.")
 
 def deinterlace_image(imageData, width):
     """Deinterlace image data (bytes, 1 byte/pixel).
@@ -357,27 +347,33 @@ def get_palette_bit_depth(colorCount):
 
     return max(math.ceil(math.log2(colorCount)), 1)
 
-def lzw_encode(palBits, imageData):
-    """Encode image data (1 byte/pixel) using LZW and palette (bytes: RGBRGB...).
-    palBits: palette bit depth in LZW encoding.
-    Generate: (LZW_code, LZW_code_length_in_bits)"""
+def lzw_encode(palBits, imageData, args):
+    """LZW encode image data (1 byte/pixel).
+    palBits: palette bit depth in encoding (2...8), args: from argparse
+    generate: (LZW_code, LZW_code_length_in_bits)"""
 
     # TODO: find out why this function encodes wolf3.gif and wolf4.gif different from GIMP.
 
-    pos = 0             # position in input
-    codeLen  = palBits + 1  # length of LZW codes
-    entry    = bytearray()   # LZW dictionary entry
+    # LZW dictionary (key = LZW entry, value = LZW code)
+    # note: doesn't contain clear and end codes, so actual length is len() + 2
+    # note: uses a lot of memory but looking up an entry is fast
+    lzwDict = dict((bytes((i,)), i) for i in range(2 ** palBits))
 
-    # LZW dictionary: {entry: code, ...}; note: doesn't contain clear and end codes,
-    # so the actual length is len() + 2
-    lzwDict = dict((bytes((i,)), i) for i in range(1 << palBits))
+    pos        = 0                 # position in input data
+    codeLen    = palBits + 1       # length of LZW codes (3...12)
+    maxDictLen = 2 ** codeLen - 2  # maximum len(lzwDict) for current codeLen
+    entry      = bytearray()       # dictionary entry
 
-    yield (1 << palBits, codeLen)  # clear code
+    # note: maxDictLen is precomputed for speed (read very often, rarely changes)
+
+    # output clear code
+    yield (2 ** palBits, codeLen)
 
     while pos < len(imageData):
-        # find longest entry that's a prefix of remaining image data, and corresponding code
+        # find longest entry that's prefix of remaining input data, and corresponding code
+        # note: [pos:pos+1] instead of [pos:] breaks some decoders, investigate further?
         entry.clear()
-        for byte in imageData[pos:]:  # [pos:pos+1] breaks some decoders
+        for byte in imageData[pos:]:
             entry.append(byte)
             try:
                 code = lzwDict[bytes(entry)]
@@ -385,31 +381,37 @@ def lzw_encode(palBits, imageData):
                 entry = entry[:-1]
                 break
 
-        yield (code, codeLen)  # code for dictionary entry
-        pos += len(entry)
+        # output code for entry
+        yield (code, codeLen)
 
+        # advance in input data; if there's data left, update dictionary
+        pos += len(entry)
         if pos < len(imageData):
-            if len(lzwDict) == (1 << 12) - 2:
-                # dictionary is full
-                yield (1 << palBits, codeLen)  # clear code
-                # reinitialize code length and dictionary
-                codeLen = palBits + 1
-                lzwDict = dict((bytes((i,)), i) for i in range(1 << palBits))
-            else:
-                # add dictionary entry: current entry plus next pixel
+            if len(lzwDict) < 4094:
+                # dictionary is not full (less than 2**12 - 2 entries)
+                # add dictionary entry (current entry plus next pixel);
+                # increase code length if necessary
                 entry.append(imageData[pos])
                 lzwDict[bytes(entry)] = len(lzwDict) + 2
-                # increase code length if necessary
-                if len(lzwDict) + 2 == (1 << codeLen) + 1:
+                if len(lzwDict) > maxDictLen:
                     codeLen += 1
+                    maxDictLen = 2 ** codeLen - 2
+            elif not args.no_dict_reset:
+                # dictionary is full
+                # output clear code; reset code length and dictionary
+                yield (2 ** palBits, codeLen)
+                codeLen = palBits + 1
+                maxDictLen = 2 ** codeLen - 2
+                lzwDict = dict((bytes((i,)), i) for i in range(2 ** palBits))
 
-    yield ((1 << palBits) + 1, codeLen)  # end code
+    # output end code
+    yield (2 ** palBits + 1, codeLen)
 
 def lzw_codes_to_bytes(paletteBits, imageData, args):
     """Get LZW codes, generate LZW bytes."""
 
-    data    = 0   # LZW codes
-    dataLen = 0   # number of bits in data (max. 7 + 12 = 19)
+    data    = 0  # LZW codes to convert into bytes
+    dataLen = 0  # number of bits in data (max. 7 + 12 = 19)
 
     # stats
     codeCount    = 0
@@ -417,10 +419,11 @@ def lzw_codes_to_bytes(paletteBits, imageData, args):
     minCodeLen   = 99
     maxCodeLen   = 0
 
-    for (code, codeLen) in lzw_encode(paletteBits, imageData):
-        # prepend code to data; chop off full bytes from end of data
+    for (code, codeLen) in lzw_encode(paletteBits, imageData, args):
+        # prepend code to data
         data |= code << dataLen
         dataLen += codeLen
+        # chop off full bytes from end of data
         while dataLen >= 8:
             yield data & 0xff
             data >>= 8
@@ -432,7 +435,7 @@ def lzw_codes_to_bytes(paletteBits, imageData, args):
         maxCodeLen = max(codeLen, maxCodeLen)
 
     if dataLen:
-        # output last byte padded with zeroes
+        # output last byte
         yield data
 
     if args.verbose:
@@ -498,8 +501,8 @@ def parse_arguments():
     """Parse command line arguments using argparse."""
 
     parser = argparse.ArgumentParser(
-        description="Decode/encode a GIF file into/from raw RGB data (bytes: RGBRGB...; "
-        "order of pixels: first right, then down; file extension '.data' in GIMP)."
+        description="Decode/encode a GIF file into/from raw RGB data (bytes: RGBRGB...;"
+        " order of pixels: first right, then down; file extension '.data' in GIMP)."
     )
 
     parser.add_argument(
@@ -513,6 +516,11 @@ def parse_arguments():
     parser.add_argument(
         "-v", "--verbose", action="store_true",
         help="Print more info."
+    )
+    parser.add_argument(
+        "--no-dict-reset", action="store_true",
+        help="When encoding, don't reset the LZW dictionary when it fills up."
+        " May compress highly repetitive images better."
     )
     parser.add_argument(
         "input_file",
