@@ -16,11 +16,10 @@ Encoder:
 
 ## Help text
 ```
-usage: gif.py [-h] [-o {d,e}] [-w WIDTH] [-v] [--no-dict-reset]
-              input_file output_file
+usage: gif.py [-h] [-o {d,e,a}] [-w WIDTH] [-v] [--no-dict-reset] input_file output_file
 
-Decode/encode a GIF file into/from raw RGB data (bytes: RGBRGB...; order of
-pixels: first right, then down; file extension '.data' in GIMP).
+Decode/encode a GIF file into/from raw RGB data (bytes: RGBRGB...; order of pixels: first right,
+then down; file extension '.data' in GIMP).
 
 positional arguments:
   input_file            File to read.
@@ -28,13 +27,11 @@ positional arguments:
 
 optional arguments:
   -h, --help            show this help message and exit
-  -o {d,e}, --operation {d,e}
-                        What to do (d=decode, e=encode). Required.
+  -o {d,e,a}, --operation {d,e,a}
+                        What to do (d=decode, e=encode, a=autodetect; default=a).
   -w WIDTH, --width WIDTH
                         Width of input file in pixels (encoding only).
   -v, --verbose         Print more info.
-  --no-dict-reset       When encoding, don't reset the LZW dictionary when it
-                        fills up. May compress highly repetitive images
-                        better.
+  --no-dict-reset       When encoding, don't reset the LZW dictionary when it fills up. May
+                        compress highly repetitive images better.
 ```
-
