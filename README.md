@@ -5,18 +5,16 @@ GIF decoder/encoder in pure Python.
 Decoder:
 * supports interlaced images
 * only extracts the first image from a file
-* quite fast
 * uses a lot of RAM
 
 Encoder:
 * doesn't support interlaced images
 * always one image per file
-* quite fast
 * uses a lot of RAM
 
 ## Help text
 ```
-usage: gif.py [-h] [-o {d,e,a}] [-w WIDTH] [-v] [--no-dict-reset] input_file output_file
+usage: gif.py [-h] [-o {d,e,a}] [-w WIDTH] [-r] [-v] input_file output_file
 
 Decode/encode a GIF file into/from raw RGB data (bytes: RGBRGB...; order of pixels: first right,
 then down; file extension '.data' in GIMP).
@@ -31,7 +29,7 @@ optional arguments:
                         What to do (d=decode, e=encode, a=autodetect; default=a).
   -w WIDTH, --width WIDTH
                         Width of input file in pixels (encoding only).
-  -v, --verbose         Print more info.
-  --no-dict-reset       When encoding, don't reset the LZW dictionary when it fills up. May
+  -r, --no-dict-reset   When encoding, don't reset the LZW dictionary when it fills up. May
                         compress highly repetitive images better.
+  -v, --verbose         Print more info.
 ```
