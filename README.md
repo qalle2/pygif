@@ -1,35 +1,48 @@
 # pygif
 GIF decoder/encoder in pure Python.
 
-## Features
-Decoder:
+## gifdec.py
+The decoder. Notes:
 * supports interlaced images
 * only extracts the first image from a file
 * uses a lot of RAM
 
-Encoder:
+```
+usage: gifdec.py [-h] [-v] input_file output_file
+
+Decode a GIF file into raw RGB data (bytes: RGBRGB...; order of pixels: first right, then down;
+file extension '.data' in GIMP).
+
+positional arguments:
+  input_file     GIF file to read.
+  output_file    Raw RGB data file to write.
+
+optional arguments:
+  -h, --help     show this help message and exit
+  -v, --verbose  Print more info.
+```
+
+## gifenc.py
+The encoder. Notes:
 * doesn't support interlaced images
 * always one image per file
 * uses a lot of RAM
 
-## Help text
 ```
-usage: gif.py [-h] [-o {d,e,a}] [-w WIDTH] [-r] [-v] input_file output_file
+usage: gifenc.py [-h] -w WIDTH [-r] [-v] input_file output_file
 
-Decode/encode a GIF file into/from raw RGB data (bytes: RGBRGB...; order of pixels: first right,
-then down; file extension '.data' in GIMP).
+Encode a GIF file from raw RGB data (bytes: RGBRGB...; order of pixels: first right, then down;
+file extension '.data' in GIMP).
 
 positional arguments:
-  input_file            File to read.
-  output_file           File to write.
+  input_file            Raw RGB data file to read.
+  output_file           GIF file to write.
 
 optional arguments:
   -h, --help            show this help message and exit
-  -o {d,e,a}, --operation {d,e,a}
-                        What to do (d=decode, e=encode, a=autodetect; default=a).
   -w WIDTH, --width WIDTH
-                        Width of input file in pixels (encoding only).
-  -r, --no-dict-reset   When encoding, don't reset the LZW dictionary when it fills up. May
-                        compress highly repetitive images better.
+                        Width of input file in pixels. Required.
+  -r, --no-dict-reset   Don't reset the LZW dictionary when it fills up. May compress highly
+                        repetitive images better.
   -v, --verbose         Print more info.
 ```
