@@ -5,7 +5,9 @@
 #     LSD = Logical Screen Descriptor
 #     LZW = Lempel-Ziv-Welch
 
-import argparse, os, struct, sys, time
+import argparse, math, os, struct, sys, time
+
+BITS_PER_BYTE = 8
 
 class GifError(Exception):
     # exception for GIF-related errors
@@ -85,7 +87,7 @@ def read_image_info(handle):
     if packedFields & 0x80:
         # has LCT
         lctAddr = handle.tell()
-        lctBits = (packedFields & 7) + 1
+        lctBits = (packedFields & 0x07) + 1
         skip_bytes(handle, 2 ** lctBits * 3)
     else:
         lctAddr = None
@@ -159,7 +161,7 @@ def read_gif(handle):
     if packedFields & 0x80:
         # has GCT
         palAddr = handle.tell()
-        palBits = (packedFields & 7) + 1
+        palBits = (packedFields & 0x07) + 1
         skip_bytes(handle, 2 ** palBits * 3)
     else:
         # no GCT
@@ -188,106 +190,87 @@ def read_gif(handle):
         "lzwAddr":    imageInfo["lzwAddr"],
     }
 
-def lzw_bytes_to_codes(data, palBits):
-    # decode LZW data (bytes);
-    # palBits: palette bit depth in LZW encoding (2-8);
-    # generate: (LZW_code, code_length_in_bits, code_for_previous_dictionary_entry)
-
-    pos       = 0                 # number of bytes completely read from LZW data
-    bitPos    = 0                 # number of bits read from next byte in LZW data
-    codeLen   = palBits + 1       # length of LZW codes
-    clearCode = 2 ** palBits      # LZW clear code
-    endCode   = 2 ** palBits + 1  # LZW end code
-    dictLen   = 2 ** palBits + 2  # length of simulated LZW dictionary
-    prevCode  = None              # previous code for dictionary entry or None
-
-    while True:
-        # read next code from remaining data
-        # combine 1-3 bytes in reverse order, e.g. 0xab 0xcd -> 0xcdab
-        code = 0
-        for offset in range((bitPos + codeLen + 7) // 8):  # ceil((bitPos + codeLen) / 8)
-            try:
-                code |= data[pos+offset] << (offset * 8)
-            except IndexError:
-                raise GifError("unexpected end of file")
-        code >>= bitPos       # delete previously-read bits from end
-        code %= 2 ** codeLen  # delete unnecessary bits from beginning
-
-        # advance in data
-        bitPos += codeLen
-        pos += bitPos // 8
-        bitPos %= 8
-
-        yield (code, codeLen, prevCode)
-
-        if code == clearCode:
-            # reset code and dictionary length, don't add dictionary entry with next code
-            codeLen = palBits + 1
-            dictLen = 2 ** palBits + 2
-            prevCode = None
-        elif code == endCode:
-            break
-        else:
-            # dictionary entry
-            if prevCode is not None:
-                # simulate adding a dictionary entry
-                if code > dictLen:
-                    raise GifError("invalid LZW code")
-                dictLen += 1
-                prevCode = None
-            if code < dictLen < 2 ** 12:
-                # prepare to add a dictionary entry
-                prevCode = code
-            if dictLen == 2 ** codeLen and codeLen < 12:
-                codeLen += 1
-
 def lzw_decode(data, palBits, args):
     # decode LZW data (bytes)
     # palBits: palette bit depth in LZW encoding (2-8)
     # return: indexed image data (bytes)
 
+    pos       = 0                 # byte position in LZW data
+    bitPos    = 0                 # bit position within LZW data byte (0-7)
+    codeLen   = palBits + 1       # current length of LZW codes, in bits (3-12)
+    code      = 0                 # current LZW code (0-4095)
+    prevCode  = None              # previous code for dictionary entry or None
     clearCode = 2 ** palBits      # LZW clear code
     endCode   = 2 ** palBits + 1  # LZW end code
-    entry     = bytearray()       # entry to output
+    entry     = bytearray()       # reconstructed dictionary entry
     imageData = bytearray()       # decoded image data
-
-    # stats
-    codeCount    = 0  # codes read
-    totalCodeLen = 0  # bits read
+    codeCount = 0                 # number of LZW codes read (statistics only)
+    bitCount  = 0                 # number of LZW bits read (statistics only)
 
     # LZW dictionary: index = code, value = entry (reference to another code, final byte)
-    lzwDict = [(-1, i) for i in range(2 ** palBits + 2)]
+    lzwDict = [(None, i) for i in range(2 ** palBits + 2)]
 
-    # note: lzw_bytes_to_codes() does the dirty work
-    for (code, codeLen, prevCode) in lzw_bytes_to_codes(data, palBits):
+    while True:
+        # read next code from remaining data
+        # first, combine 1-3 bytes in reverse order, e.g. 0xab 0xcd -> 0xcdab
+
+        # get current LZW code (0-4095) from remaining data:
+        # 1) get the 1-3 bytes that contain the code
+        codeByteCnt = math.ceil((bitPos + codeLen) / BITS_PER_BYTE)
+        if pos + codeByteCnt > len(data):
+            raise GifError("unexpected end of file")
+        codeBytes = data[pos:pos+codeByteCnt]
+        # 2) convert the bytes into an unsigned integer (first byte = least significant)
+        code = sum(b << (i * BITS_PER_BYTE) for (i, b) in enumerate(codeBytes))
+        # 3) delete previously-read bits from the end and unnecessary bits from the beginning
+        code = (code >> bitPos) % 2 ** codeLen
+
+        # advance byte/bit position so the next code can be read correctly
+        bitPos += codeLen
+        pos += bitPos // BITS_PER_BYTE
+        bitPos %= BITS_PER_BYTE
+
+        # update statistics
         codeCount += 1
-        totalCodeLen += codeLen
+        bitCount += codeLen
 
         if code == clearCode:
-            # reset dictionary
+            # LZW clear code:
+            # reset code and dictionary length; don't add dictionary entry with next code
             lzwDict = lzwDict[:2**palBits+2]
-        elif code != endCode:
+            codeLen = palBits + 1
+            prevCode = None
+        elif code == endCode:
+            # LZW end code: stop decoding
+            break
+        elif code > len(lzwDict):
+            # invalid code
+            raise GifError("invalid LZW code")
+        else:
             # dictionary entry
             if prevCode is not None:
                 # add new entry (previous code, first byte of current/previous entry)
                 suffixCode = code if code < len(lzwDict) else prevCode
-                while suffixCode != -1:
+                while suffixCode is not None:
                     (suffixCode, suffixByte) = lzwDict[suffixCode]
                 lzwDict.append((prevCode, suffixByte))
-            # get entry
+                prevCode = None
+            # get entry and add it to output
             entry.clear()
-            while code != -1:
-                try:
-                    (code, byte) = lzwDict[code]
-                except IndexError:
-                    raise GifError("invalid LZW code")
+            referredCode = code
+            while referredCode is not None:
+                (referredCode, byte) = lzwDict[referredCode]
                 entry.append(byte)
             entry.reverse()
-            # add entry to output
             imageData.extend(entry)
+            # prepare to add a dictionary entry
+            if len(lzwDict) < 2 ** 12:
+                prevCode = code
+            if len(lzwDict) == 2 ** codeLen and codeLen < 12:
+                codeLen += 1
 
     if args.verbose:
-        print(f"lzwCodes={codeCount}, lzwBits={totalCodeLen}, pixels={len(imageData)}")
+        print(f"lzwCodes={codeCount}, lzwBits={bitCount}, pixels={len(imageData)}")
 
     return imageData
 
