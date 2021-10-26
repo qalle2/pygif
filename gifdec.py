@@ -211,9 +211,6 @@ def lzw_decode(data, palBits, args):
     lzwDict = [(None, i) for i in range(2 ** palBits + 2)]
 
     while True:
-        # read next code from remaining data
-        # first, combine 1-3 bytes in reverse order, e.g. 0xab 0xcd -> 0xcdab
-
         # get current LZW code (0-4095) from remaining data:
         # 1) get the 1-3 bytes that contain the code
         codeByteCnt = math.ceil((bitPos + codeLen) / BITS_PER_BYTE)
@@ -236,7 +233,7 @@ def lzw_decode(data, palBits, args):
 
         if code == clearCode:
             # LZW clear code:
-            # reset code and dictionary length; don't add dictionary entry with next code
+            # reset dictionary and code length; don't add a dictionary entry with next code
             lzwDict = lzwDict[:2**palBits+2]
             codeLen = palBits + 1
             prevCode = None
@@ -255,7 +252,7 @@ def lzw_decode(data, palBits, args):
                     (suffixCode, suffixByte) = lzwDict[suffixCode]
                 lzwDict.append((prevCode, suffixByte))
                 prevCode = None
-            # get entry and add it to output
+            # reconstruct and store entry
             entry.clear()
             referredCode = code
             while referredCode is not None:
