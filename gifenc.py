@@ -7,10 +7,6 @@
 
 import argparse, math, os, struct, sys, time
 
-class RgbError(Exception):
-    # exception for errors related to raw RGB files
-    pass
-
 def parse_arguments():
     # parse command line arguments using argparse
 
@@ -40,8 +36,7 @@ def parse_arguments():
     args = parser.parse_args()
 
     if not 1 <= args.width <= 0xffff:
-        sys.exit("Invalid width.")
-
+        sys.exit("Invalid width argument.")
     if not os.path.isfile(args.input_file):
         sys.exit("Input file not found.")
     if os.path.exists(args.output_file):
@@ -49,18 +44,14 @@ def parse_arguments():
 
     return args
 
-def get_palette_from_raw_image(handle):
-    # create palette (bytes, RGBRGB...) from raw RGB image
+def get_palette(handle):
+    # get palette from raw RGB image, return bytes (RGBRGB...)
 
     pixelCount = handle.seek(0, 2) // 3
     handle.seek(0)
-    palette = set()
-
-    for i in range(pixelCount):
-        palette.add(handle.read(3))
-        if len(palette) > 256:
-            raise RgbError("too many colors")
-
+    palette = {handle.read(3) for i in range(pixelCount)}
+    if len(palette) > 256:
+        sys.exit("Too many unique colors in input file.")
     return b"".join(sorted(palette))
 
 def raw_image_to_indexed(handle, palette):
@@ -69,19 +60,9 @@ def raw_image_to_indexed(handle, palette):
     pixelCount = handle.seek(0, 2) // 3
     handle.seek(0)
     rgbToIndex = dict((palette[i*3:(i+1)*3], i) for i in range(len(palette) // 3))
-    indexedData = bytearray()
+    return bytes(rgbToIndex[handle.read(3)] for i in range(pixelCount))
 
-    for i in range(pixelCount):
-        indexedData.append(rgbToIndex[handle.read(3)])
-
-    return indexedData
-
-def get_palette_bit_depth(colorCount):
-    # how many bits needed for palette
-    assert 1 <= colorCount <= 256
-    return max(math.ceil(math.log2(colorCount)), 1)
-
-def lzw_encode(palBits, imageData, args):
+def generate_lzw_codes(palBits, imageData, args):
     # LZW encode image data (1 byte/pixel)
     # palBits: palette bit depth in encoding (2-8)
     # generate: (LZW_code, LZW_code_length_in_bits)
@@ -134,23 +115,22 @@ def lzw_encode(palBits, imageData, args):
     # output end code
     yield (2 ** palBits + 1, codeLen)
 
-def lzw_codes_to_bytes(paletteBits, imageData, args):
-    # get LZW codes, return LZW data bytes
+def generate_lzw_bytes(paletteBits, imageData, args):
+    # get LZW codes, generate LZW data bytes
 
-    data      = 0            # LZW codes to convert into bytes
-    dataLen   = 0            # number of bits in data (max. 7 + 12 = 19)
-    dataBytes = bytearray()
+    data    = 0  # LZW codes to convert into bytes
+    dataLen = 0  # number of bits in data (max. 7 + 12 = 19)
 
     codeCount    = 0  # codes written
     totalCodeLen = 0  # bits written
 
-    for (code, codeLen) in lzw_encode(paletteBits, imageData, args):
+    for (code, codeLen) in generate_lzw_codes(paletteBits, imageData, args):
         # prepend code to data
         data |= code << dataLen
         dataLen += codeLen
         # chop off full bytes from end of data
         while dataLen >= 8:
-            dataBytes.append(data & 0xff)
+            yield data & 0xff
             data >>= 8
             dataLen -= 8
         # update stats
@@ -158,75 +138,77 @@ def lzw_codes_to_bytes(paletteBits, imageData, args):
         totalCodeLen += codeLen
 
     if dataLen:
-        # output last byte
-        dataBytes.append(data)
+        yield data  # the last byte
 
     if args.verbose:
         print(f"pixels={len(imageData)}, lzwCodes={codeCount}, lzwBits={totalCodeLen}")
 
-    return dataBytes
+def generate_gif(palette, imageData, args):
+    # generate a GIF file (version 87a, one image) as bytestrings
+    # palette: 3 bytes/color, imageData: 1 byte/pixel
 
-def write_gif(width, height, palette, lzwData, handle):
-    # write a GIF file (version 87a, with GCT, one image)
-    # palette: bytes RGBRGB..., lzwData: bytes
+    height = len(imageData) // args.width  # image height
 
-    palBits = get_palette_bit_depth(len(palette) // 3)
+    # palette size in bits
+    palBitsGct = max(math.ceil(math.log2(len(palette) // 3)), 1)  # in Global Color Table (1-8)
+    palBitsLzw = max(palBitsGct, 2)                               # in LZW encoding (2-8)
 
-    handle.seek(0)
+    yield b"GIF87a"  # Header (signature, version)
 
-    # Header and LSD
-    packedFields = 0x80 | (palBits - 1)
-    handle.write(struct.pack("<6s2H3B", b"GIF87a", width, height, packedFields, 0, 0))
+    # Logical Screen Descriptor
+    yield struct.pack(
+        "<2H3B",
+        args.width, height,           # logical screen width/height
+        0b10000000 | palBitsGct - 1,  # packed fields (Global Color Table present)
+        0, 0                          # background color index, aspect ratio
+    )
 
-    # GCT (padded)
-    handle.write(palette + (2 ** palBits * 3 - len(palette)) * b"\x00")
+    yield palette + (2 ** palBitsGct * 3 - len(palette)) * b"\x00"  # padded Global Color Table
 
     # Image Descriptor
-    imgDesc = struct.pack("<s4HB", b",", 0, 0, width, height, 0)
-    handle.write(imgDesc)
+    yield struct.pack(
+        "<s4HB",
+        b",", 0, 0,          # image separator, image left/top position
+        args.width, height,  # image width/height
+        0b00000000           # packed fields
+    )
 
-    # palette bit depth in LZW encoding
-    handle.write(bytes((max(palBits, 2),)))
+    yield bytes((palBitsLzw,))
 
-    # LZW data
-    pos = 0
-    while pos < len(lzwData):
-        sbSize = min(0xff, len(lzwData) - pos)  # subblock size
-        handle.write(bytes((sbSize,)) + lzwData[pos:pos+sbSize])
-        pos += sbSize
+    # LZW data in subblocks (length byte + 255 LZW bytes or less)
+    subblock = bytearray()
+    for lzwByte in generate_lzw_bytes(palBitsLzw, imageData, args):
+        subblock.append(lzwByte)
+        if len(subblock) == 0xff:
+            # flush subblock
+            yield bytes((len(subblock),)) + subblock
+            subblock.clear()
+    if subblock:
+        yield bytes((len(subblock),)) + subblock  # the last subblock
 
-    # empty subblock and Trailer
-    handle.write(b"\x00;")
-
-def encode_gif(rawHandle, gifHandle, args):
-    # convert raw RGB image (bytes: RGBRGB...) into GIF
-
-    (height, remainder) = divmod(rawHandle.seek(0, 2), args.width * 3)
-    if remainder or not 1 <= height <= 0xffff:
-        raise RgbError("invalid file size")
-
-    palette = get_palette_from_raw_image(rawHandle)
-    if args.verbose:
-        print(f"width={args.width}, {height=}, uniqueColors={len(palette)//3}")
-    imageData = raw_image_to_indexed(rawHandle, palette)
-    lzwPalBits = max(get_palette_bit_depth(len(palette) // 3), 2)
-    lzwData = lzw_codes_to_bytes(lzwPalBits, imageData, args)
-    write_gif(args.width, height, palette, lzwData, gifHandle)
+    yield b"\x00;"  # empty subblock, trailer
 
 def main():
     startTime = time.time()
     args = parse_arguments()
 
     try:
-        with open(args.input_file, "rb") as source, open(args.output_file, "wb") as target:
-            encode_gif(source, target, args)
+        # read input file
+        with open(args.input_file, "rb") as source:
+            (height, remainder) = divmod(source.seek(0, 2), args.width * 3)
+            if remainder or not 1 <= height <= 0xffff:
+                sys.exit("Invalid input file size.")
+            palette = get_palette(source)
+            imageData = raw_image_to_indexed(source, palette)
+        # write output file
+        with open(args.output_file, "wb") as target:
+            target.seek(0)
+            for chunk in generate_gif(palette, imageData, args):
+                target.write(chunk)
     except OSError:
         sys.exit("Error reading/writing files.")
-    except RgbError as error:
-        sys.exit(f"Error in raw RGB data file: {error}")
 
     if args.verbose:
         print(f"time={time.time()-startTime:.1f}")
 
-if __name__ == "__main__":
-    main()
+main()
