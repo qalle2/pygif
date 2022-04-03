@@ -1,8 +1,7 @@
 # pygif
-GIF decoder/encoder in pure Python.
 
 ## gifdec.py
-The decoder. Notes:
+A GIF decoder in pure Python. Notes:
 * supports interlaced images
 * only extracts the first image from a file
 * uses a lot of RAM
@@ -23,26 +22,26 @@ optional arguments:
 ```
 
 ## gifenc.py
-The encoder. Notes:
+A GIF encoder in pure Python. Notes:
 * doesn't support interlaced images
 * always one image per file
 * uses a lot of RAM
 
 ```
-usage: gifenc.py [-h] -w WIDTH [-r] [-v] input_file output_file
+usage: gifenc.py [-h] [-r] [-v] input_file width output_file
 
-Encode a GIF file from raw RGB data (bytes: RGBRGB...; order of pixels: first right, then down;
-file extension '.data' in GIMP).
+Convert a raw RGB image file into a GIF file.
 
 positional arguments:
-  input_file            Raw RGB data file to read.
-  output_file           GIF file to write.
+  input_file           Raw RGB image file to read. Format: 3 bytes (red, green, blue) per pixel;
+                       order of pixels: first right, then down; file extension '.data' in GIMP.
+                       256 unique colors or less.
+  width                Width of input_file in pixels.
+  output_file          GIF file to write.
 
 optional arguments:
-  -h, --help            show this help message and exit
-  -w WIDTH, --width WIDTH
-                        Width of input file in pixels. Required.
-  -r, --no-dict-reset   Don't reset the LZW dictionary when it fills up. May compress highly
-                        repetitive images better.
-  -v, --verbose         Print more info.
+  -h, --help           show this help message and exit
+  -r, --no-dict-reset  Don't reset the LZW dictionary when it fills up. May compress highly
+                       repetitive images better.
+  -v, --verbose        Print more info.
 ```
