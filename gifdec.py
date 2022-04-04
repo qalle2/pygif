@@ -1,33 +1,21 @@
-# a GIF decoder
-# acronyms:
-#     GCT = Global Color Table
-#     LCT = Local Color Table
-#     LSD = Logical Screen Descriptor
-#     LZW = Lempel-Ziv-Welch
+# a GIF decoder in pure Python
 
 import argparse, math, os, struct, sys, time
 
-BITS_PER_BYTE = 8
-
-class GifError(Exception):
-    # exception for GIF-related errors
-    pass
-
 def parse_arguments():
-    # parse command line arguments using argparse
-
     parser = argparse.ArgumentParser(
-        description="Decode a GIF file into raw RGB data (bytes: RGBRGB...; order of pixels: "
-        "first right, then down; file extension '.data' in GIMP)."
+        description="Convert a GIF file into a raw RGB image file."
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Print more info."
     )
     parser.add_argument(
-        "input_file", help="GIF file to read."
+        "input_file", help="GIF file to read. Only the first image will be read."
     )
     parser.add_argument(
-        "output_file", help="Raw RGB data file to write."
+        "output_file",
+        help="Raw RGB image file to write. Format: 3 bytes (red, green, blue) per pixel; order "
+        "of pixels: first right, then down; file extension '.data' in GIMP."
     )
 
     args = parser.parse_args()
@@ -39,68 +27,55 @@ def parse_arguments():
 
     return args
 
-def read_bytes(handle, length):
+def get_bytes(handle, length):
     # read bytes from file
     data = handle.read(length)
     if len(data) < length:
-        raise GifError("unexpected end of file")
+        sys.exit("Unexpected end of file.")
     return data
 
-def skip_bytes(handle, length):
-    # skip bytes in file
-    origPos = handle.tell()
-    handle.seek(length, 1)
-    if handle.tell() - origPos < length:
-        raise GifError("unexpected end of file")
-
-def read_subblocks(handle):
+def generate_subblocks(handle):
     # generate data from GIF subblocks
-    sbSize = read_bytes(handle, 1)[0]  # size of first subblock
+    sbSize = get_bytes(handle, 1)[0]  # size of first subblock
     while sbSize:
-        chunk = read_bytes(handle, sbSize + 1)  # subblock, size of next subblock
+        chunk = get_bytes(handle, sbSize + 1)  # subblock, size of next subblock
         yield chunk[:-1]
         sbSize = chunk[-1]
 
-def skip_subblocks(handle):
-    # skip GIF subblocks
-    sbSize = read_bytes(handle, 1)[0]
-    while sbSize:
-        skip_bytes(handle, sbSize)
-        sbSize = read_bytes(handle, 1)[0]
-
-def read_image_info(handle):
+def get_image_info(handle):
     # read information of one image in GIF file
     # handle position must be at first byte after ',' of Image Descriptor
     # return a dict with these keys:
     #     width:      image width
     #     height:     image height
     #     interlace:  is image data stored in interlaced format? (bool)
-    #     lctAddr:    LCT address (None = no LCT)
-    #     lctBits:    LCT bit depth (None = no LCT)
+    #     lctAddr:    Local Color Table address (None = no LCT)
+    #     lctBits:    Local Color Table bit depth (None = no LCT)
     #     lzwPalBits: palette bit depth in LZW encoding
     #     lzwAddr:    LZW data address
 
-    (width, height, packedFields) = struct.unpack("<4x2HB", read_bytes(handle, 9))
+    (width, height, packedFields) = struct.unpack("<4x2HB", get_bytes(handle, 9))
     if min(width, height) == 0:
-        raise GifError("image area zero")
+        sys.exit("Image area is zero.")
 
-    if packedFields & 0x80:
-        # has LCT
+    if packedFields & 0b10000000:
+        # has Local Color Table
         lctAddr = handle.tell()
-        lctBits = (packedFields & 0x07) + 1
-        skip_bytes(handle, 2 ** lctBits * 3)
+        lctBits = (packedFields & 0b00000111) + 1
+        get_bytes(handle, 2 ** lctBits * 3)  # skip bytes
     else:
+        # no Local Color Table
         lctAddr = None
         lctBits = None
 
-    lzwPalBits = read_bytes(handle, 1)[0]
+    lzwPalBits = get_bytes(handle, 1)[0]
     if not 2 <= lzwPalBits <= 11:
-        raise GifError("invalid LZW palette bit depth")
+        sys.exit("Invalid LZW palette bit depth.")
 
     return {
         "width":      width,
         "height":     height,
-        "interlace":  bool(packedFields & 0x40),
+        "interlace":  bool(packedFields & 0b01000000),
         "lctAddr":    lctAddr,
         "lctBits":    lctBits,
         "lzwPalBits": lzwPalBits,
@@ -111,74 +86,72 @@ def skip_extension_block(handle):
     # skip Extension block in GIF file;
     # handle position must be at first byte after Extension Introducer ('!')
 
-    label = read_bytes(handle, 1)[0]
+    label = get_bytes(handle, 1)[0]
     if label in (0x01, 0xf9, 0xff):
         # Plain Text Extension, Graphic Control Extension, Application Extension
-        skip_bytes(handle, read_bytes(handle, 1)[0])
-        skip_subblocks(handle)
+        get_bytes(handle, get_bytes(handle, 1)[0])  # skip bytes
+        all(generate_subblocks(handle))  # skip subblocks
     elif label == 0xfe:
         # Comment Extension
-        skip_subblocks(handle)
+        all(generate_subblocks(handle))  # skip subblocks
     else:
-        raise GifError("invalid Extension label")
+        sys.exit("Invalid Extension label.")
 
-def read_first_image_info(handle):
-    # return read_image_info() for first image in GIF file, or None if there are no images;
+def get_first_image_info(handle):
+    # return get_image_info() for first image in GIF file, or None if there are no images;
     # ignore any extension blocks before the image;
-    # handle position must be at first byte after GCT (or LSD if there's no GCT)
+    # handle position must be at first byte after Global Color Table (or Logical Screen Descriptor
+    # if there's no Global Color Table)
 
     while True:
-        blockType = read_bytes(handle, 1)
+        blockType = get_bytes(handle, 1)
         if blockType == b",":  # Image Descriptor
-            return read_image_info(handle)
+            return get_image_info(handle)
         elif blockType == b"!":  # Extension
             skip_extension_block(handle)
         elif blockType == b";":  # Trailer
             return None
         else:
-            raise GifError("invalid block type")
+            sys.exit("Invalid block type.")
 
-def read_gif(handle):
+def get_gif_info(handle):
     # read a GIF file; return info of first image as a dict with these keys:
-    #     width:      see read_image_info()
-    #     height:     see read_image_info()
-    #     interlace:  see read_image_info()
-    #     palAddr:    palette (LCT/GCT) address
-    #     palBits:    palette (LCT/GCT) bit depth
-    #     lzwPalBits: see read_image_info()
-    #     lzwAddr:    see read_image_info()
+    #     width, height, interlace, lzwPalBits, lzwAddr: see get_image_info()
+    #     palAddr: palette (Local/Global Color Table) address
+    #     palBits: palette (Local/Global Color Table) bit depth
 
     handle.seek(0)
 
-    # Header and LSD
-    (id_, version, packedFields) = struct.unpack("<3s3s4xB2x", read_bytes(handle, 13))
-
+    # Header
+    (id_, version) = struct.unpack("3s3s", get_bytes(handle, 6))
     if id_ != b"GIF":
-        raise GifError("not a GIF file")
+        sys.exit("Not a GIF file.")
     if version not in (b"87a", b"89a"):
         print("Warning: unknown GIF version.", file=sys.stderr)
 
-    if packedFields & 0x80:
-        # has GCT
+    # Logical Screen Descriptor
+    packedFields = struct.unpack("4xB2x", get_bytes(handle, 7))[0]
+    if packedFields & 0b10000000:
+        # has Global Color Table
         palAddr = handle.tell()
-        palBits = (packedFields & 0x07) + 1
-        skip_bytes(handle, 2 ** palBits * 3)
+        palBits = (packedFields & 0b00000111) + 1
+        get_bytes(handle, 2 ** palBits * 3)  # skip bytes
     else:
-        # no GCT
+        # no Global Color Table
         palAddr = None
         palBits = None
 
-    imageInfo = read_first_image_info(handle)
+    imageInfo = get_first_image_info(handle)
     if imageInfo is None:
-        raise GifError("no images")
+        sys.exit("No images in file.")
 
     if imageInfo["lctAddr"] is not None:
-        # use LCT instead of GCT
+        # use Local instead of Global Color Table
         palAddr = imageInfo["lctAddr"]
         palBits = imageInfo["lctBits"]
     elif palAddr is None:
-        # no LCT or GCT
-        raise GifError("no palette")
+        # no Local/Global Color Table
+        sys.exit("No palette for first image.")
 
     return {
         "width":      imageInfo["width"],
@@ -191,7 +164,7 @@ def read_gif(handle):
     }
 
 def lzw_decode(data, palBits, args):
-    # decode LZW data (bytes)
+    # decode Lempel-Ziv-Welch (LZW) data (bytes)
     # palBits: palette bit depth in LZW encoding (2-8)
     # return: indexed image data (bytes)
 
@@ -213,19 +186,19 @@ def lzw_decode(data, palBits, args):
     while True:
         # get current LZW code (0-4095) from remaining data:
         # 1) get the 1-3 bytes that contain the code
-        codeByteCnt = math.ceil((bitPos + codeLen) / BITS_PER_BYTE)
+        codeByteCnt = (bitPos + codeLen + 7) // 8  # = ceil((bitPos + codeLen) / 8)
         if pos + codeByteCnt > len(data):
-            raise GifError("unexpected end of file")
+            sys.exit("Unexpected end of file.")
         codeBytes = data[pos:pos+codeByteCnt]
         # 2) convert the bytes into an unsigned integer (first byte = least significant)
-        code = sum(b << (i * BITS_PER_BYTE) for (i, b) in enumerate(codeBytes))
+        code = sum(b << (i * 8) for (i, b) in enumerate(codeBytes))
         # 3) delete previously-read bits from the end and unnecessary bits from the beginning
-        code = (code >> bitPos) % 2 ** codeLen
+        code = (code >> bitPos) & ((1 << codeLen) - 1)  # = (code >> bitPos) % 2 ** codeLen
 
         # advance byte/bit position so the next code can be read correctly
         bitPos += codeLen
-        pos += bitPos // BITS_PER_BYTE
-        bitPos %= BITS_PER_BYTE
+        pos += bitPos >> 3  # pos += bitPos // 8
+        bitPos &= 0b111     # bitPos %= 8
 
         # update statistics
         codeCount += 1
@@ -238,11 +211,9 @@ def lzw_decode(data, palBits, args):
             codeLen = palBits + 1
             prevCode = None
         elif code == endCode:
-            # LZW end code: stop decoding
             break
         elif code > len(lzwDict):
-            # invalid code
-            raise GifError("invalid LZW code")
+            sys.exit("Invalid LZW code.")
         else:
             # dictionary entry
             if prevCode is not None:
@@ -267,11 +238,11 @@ def lzw_decode(data, palBits, args):
                 codeLen += 1
 
     if args.verbose:
-        print(f"lzwCodes={codeCount}, lzwBits={bitCount}, pixels={len(imageData)}")
+        print(f"LZW data: {codeCount} codes, {bitCount} bits, {len(imageData)} pixels")
 
     return imageData
 
-def deinterlace_image(imageData, width):
+def deinterlace(imageData, width):
     # deinterlace image data (1 byte/pixel), generate one pixel row per call
 
     # group 1: pixel rows 0,  8, 16, ...
@@ -297,48 +268,45 @@ def deinterlace_image(imageData, width):
             sy = group4Start + dy // 2
         yield imageData[sy*width:(sy+1)*width]
 
-def decode_gif(gifHandle, rawHandle, args):
-    # decode GIF into raw RGB data (bytes: RGBRGB...)
-
-    info = read_gif(gifHandle)
-
-    gifHandle.seek(info["palAddr"])
-    palette = read_bytes(gifHandle, 2 ** info["palBits"] * 3)
-
-    gifHandle.seek(info["lzwAddr"])
-    imageData = b"".join(read_subblocks(gifHandle))
-
-    # decode image data
-    imageData = lzw_decode(imageData, info["lzwPalBits"], args)
-    if info["lzwPalBits"] > info["palBits"] and max(imageData) >= 2 ** info["palBits"]:
-        raise GifError("invalid index in image data")
-
-    if info["interlace"]:
-        # deinterlace
-        imageData = b"".join(deinterlace_image(imageData, info["width"]))
-
-    # convert palette into a tuple of 3-byte colors
-    palette = tuple(palette[pos:pos+3] for pos in range(0, len(palette), 3))
-
-    # write raw RGB data
-    rawHandle.seek(0)
-    for i in imageData:
-        rawHandle.write(palette[i])
-
 def main():
     startTime = time.time()
     args = parse_arguments()
 
+    # get palette and LZW image data from input file
     try:
-        with open(args.input_file, "rb") as source, open(args.output_file, "wb") as target:
-            decode_gif(source, target, args)
+        with open(args.input_file, "rb") as handle:
+            gifInfo = get_gif_info(handle)
+            handle.seek(gifInfo["palAddr"])
+            palette = get_bytes(handle, 2 ** gifInfo["palBits"] * 3)
+            handle.seek(gifInfo["lzwAddr"])
+            imageData = b"".join(generate_subblocks(handle))
     except OSError:
-        sys.exit("Error reading/writing files.")
-    except GifError as error:
-        sys.exit(f"Error in GIF file: {error}")
+        sys.exit("Error reading input file.")
 
     if args.verbose:
-        print(f"time={time.time()-startTime:.1f}")
+        print(
+            os.path.basename(args.input_file) + ":",
+            ", ".join(f"{k}={gifInfo[k]}" for k in sorted(gifInfo))
+        )
 
-if __name__ == "__main__":
-    main()
+    # decode and deinterlace image data
+    imageData = lzw_decode(imageData, gifInfo["lzwPalBits"], args)
+    if max(imageData) >= 2 ** gifInfo["palBits"]:
+        sys.exit("Invalid index in image data.")
+    if gifInfo["interlace"]:
+        imageData = b"".join(deinterlace(imageData, gifInfo["width"]))
+
+    palette = tuple(palette[i:i+3] for i in range(0, len(palette), 3))  # tuple of bytestrings
+
+    # write output file
+    try:
+        with open(args.output_file, "wb") as handle:
+            handle.seek(0)
+            handle.write(b"".join(palette[i] for i in imageData))
+    except OSError:
+        sys.exit("Error writing output file.")
+
+    if args.verbose:
+        print(f"time: {time.time()-startTime:.1f} s")
+
+main()

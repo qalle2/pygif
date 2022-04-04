@@ -9,12 +9,12 @@ A GIF decoder in pure Python. Notes:
 ```
 usage: gifdec.py [-h] [-v] input_file output_file
 
-Decode a GIF file into raw RGB data (bytes: RGBRGB...; order of pixels: first right, then down;
-file extension '.data' in GIMP).
+Convert a GIF file into a raw RGB image file.
 
 positional arguments:
-  input_file     GIF file to read.
-  output_file    Raw RGB data file to write.
+  input_file     GIF file to read. Only the first image will be read.
+  output_file    Raw RGB image file to write. Format: 3 bytes (red, green, blue) per pixel; order
+                 of pixels: first right, then down; file extension '.data' in GIMP.
 
 optional arguments:
   -h, --help     show this help message and exit
