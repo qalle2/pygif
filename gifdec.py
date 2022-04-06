@@ -1,6 +1,6 @@
 # a GIF decoder in pure Python
 
-import argparse, math, os, struct, sys, time
+import argparse, os, struct, sys, time
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
