@@ -10,12 +10,14 @@ def parse_arguments():
         "-v", "--verbose", action="store_true", help="Print more info."
     )
     parser.add_argument(
-        "input_file", help="GIF file to read. Only the first image will be read."
+        "input_file",
+        help="GIF file to read. Only the first image will be read."
     )
     parser.add_argument(
         "output_file",
-        help="Raw RGB image file to write. Format: 3 bytes (red, green, blue) per pixel; order "
-        "of pixels: first right, then down; file extension '.data' in GIMP."
+        help="Raw RGB image file to write. Format: 3 bytes (red, green, blue) "
+        "per pixel; order of pixels: first right, then down; file extension "
+        "'.data' in GIMP."
     )
 
     args = parser.parse_args()
@@ -36,9 +38,9 @@ def get_bytes(handle, length):
 
 def generate_subblocks(handle):
     # generate data from GIF subblocks
-    sbSize = get_bytes(handle, 1)[0]  # size of first subblock
+    sbSize = get_bytes(handle, 1)[0]  # subblock size
     while sbSize:
-        chunk = get_bytes(handle, sbSize + 1)  # subblock, size of next subblock
+        chunk = get_bytes(handle, sbSize + 1)  # subblock & size of next one
         yield chunk[:-1]
         sbSize = chunk[-1]
 
@@ -54,14 +56,14 @@ def get_image_info(handle):
     #     lzwPalBits: palette bit depth in LZW encoding
     #     lzwAddr:    LZW data address
 
-    (width, height, packedFields) = struct.unpack("<4x2HB", get_bytes(handle, 9))
+    (width, height, miscFields) = struct.unpack("<4x2HB", get_bytes(handle, 9))
     if min(width, height) == 0:
         sys.exit("Image area is zero.")
 
-    if packedFields & 0b10000000:
+    if miscFields & 0b10000000:
         # has Local Color Table
         lctAddr = handle.tell()
-        lctBits = (packedFields & 0b00000111) + 1
+        lctBits = (miscFields & 0b00000111) + 1
         get_bytes(handle, 2 ** lctBits * 3)  # skip bytes
     else:
         # no Local Color Table
@@ -75,7 +77,7 @@ def get_image_info(handle):
     return {
         "width":      width,
         "height":     height,
-        "interlace":  bool(packedFields & 0b01000000),
+        "interlace":  bool(miscFields & 0b01000000),
         "lctAddr":    lctAddr,
         "lctBits":    lctBits,
         "lzwPalBits": lzwPalBits,
@@ -88,7 +90,7 @@ def skip_extension_block(handle):
 
     label = get_bytes(handle, 1)[0]
     if label in (0x01, 0xf9, 0xff):
-        # Plain Text Extension, Graphic Control Extension, Application Extension
+        # Plain Text Extension, Graphic Control Extension, Application Ext.
         get_bytes(handle, get_bytes(handle, 1)[0])  # skip bytes
         all(generate_subblocks(handle))  # skip subblocks
     elif label == 0xfe:
@@ -98,10 +100,11 @@ def skip_extension_block(handle):
         sys.exit("Invalid Extension label.")
 
 def get_first_image_info(handle):
-    # return get_image_info() for first image in GIF file, or None if there are no images;
+    # return get_image_info() for first image in GIF file, or None if there
+    # are no images;
     # ignore any extension blocks before the image;
-    # handle position must be at first byte after Global Color Table (or Logical Screen Descriptor
-    # if there's no Global Color Table)
+    # handle position must be at first byte after Global Color Table (or after
+    # Logical Screen Descriptor if there's no Global Color Table)
 
     while True:
         blockType = get_bytes(handle, 1)
@@ -180,20 +183,24 @@ def lzw_decode(data, palBits, args):
     codeCount = 0                 # number of LZW codes read (statistics only)
     bitCount  = 0                 # number of LZW bits read (statistics only)
 
-    # LZW dictionary: index = code, value = entry (reference to another code, final byte)
+    # LZW dictionary: index = code, value = entry (reference to another code,
+    # final byte)
     lzwDict = [(None, i) for i in range(2 ** palBits + 2)]
 
     while True:
         # get current LZW code (0-4095) from remaining data:
-        # 1) get the 1-3 bytes that contain the code
-        codeByteCnt = (bitPos + codeLen + 7) // 8  # = ceil((bitPos + codeLen) / 8)
+        # 1) get the 1-3 bytes that contain the code; equivalent to:
+        # codeByteCnt = ceil((bitPos + codeLen) / 8)
+        codeByteCnt = (bitPos + codeLen + 7) // 8
         if pos + codeByteCnt > len(data):
             sys.exit("Unexpected end of file.")
         codeBytes = data[pos:pos+codeByteCnt]
-        # 2) convert the bytes into an unsigned integer (first byte = least significant)
+        # 2) convert the bytes into an integer (first byte = least significant)
         code = sum(b << (i * 8) for (i, b) in enumerate(codeBytes))
-        # 3) delete previously-read bits from the end and unnecessary bits from the beginning
-        code = (code >> bitPos) & ((1 << codeLen) - 1)  # = (code >> bitPos) % 2 ** codeLen
+        # 3) delete previously-read bits from the end and unnecessary bits
+        # from the beginning; equivalent to:
+        # code = (code >> bitPos) % 2 ** codeLen
+        code = (code >> bitPos) & ((1 << codeLen) - 1)
 
         # advance byte/bit position so the next code can be read correctly
         bitPos += codeLen
@@ -206,7 +213,7 @@ def lzw_decode(data, palBits, args):
 
         if code == clearCode:
             # LZW clear code:
-            # reset dictionary and code length; don't add a dictionary entry with next code
+            # reset dict. & code length; don't add dict. entry with next code
             lzwDict = lzwDict[:2**palBits+2]
             codeLen = palBits + 1
             prevCode = None
@@ -217,7 +224,8 @@ def lzw_decode(data, palBits, args):
         else:
             # dictionary entry
             if prevCode is not None:
-                # add new entry (previous code, first byte of current/previous entry)
+                # add new entry (previous code, first byte of current/previous
+                # entry)
                 suffixCode = code if code < len(lzwDict) else prevCode
                 while suffixCode is not None:
                     (suffixCode, suffixByte) = lzwDict[suffixCode]
@@ -238,7 +246,10 @@ def lzw_decode(data, palBits, args):
                 codeLen += 1
 
     if args.verbose:
-        print(f"LZW data: {codeCount} codes, {bitCount} bits, {len(imageData)} pixels")
+        print(
+            f"LZW data: {codeCount} codes, {bitCount} bits, {len(imageData)} "
+            "pixels"
+        )
 
     return imageData
 
@@ -296,7 +307,8 @@ def main():
     if gifInfo["interlace"]:
         imageData = b"".join(deinterlace(imageData, gifInfo["width"]))
 
-    palette = tuple(palette[i:i+3] for i in range(0, len(palette), 3))  # tuple of bytestrings
+    # tuple of bytestrings
+    palette = tuple(palette[i:i+3] for i in range(0, len(palette), 3))
 
     # write output file
     try:
