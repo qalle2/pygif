@@ -253,30 +253,35 @@ def lzw_decode(data, palBits, args):
 
     return imageData
 
-def deinterlace(imageData, width):
-    # deinterlace image data (1 byte/pixel), generate one pixel row per call
+def get_deinterlace_order(height):
+    # generate one interlaced (source) pixel row index for each deinterlaced
+    # (destination) pixel row index;
+    # e.g. if height = 8, generate: 0, 4, 2, 5, 1, 6, 3, 7
 
     # group 1: pixel rows 0,  8, 16, ...
     # group 2: pixel rows 4, 12, 20, ...
     # group 3: pixel rows 2,  6, 10, ...
     # group 4: pixel rows 1,  3,  5, ...
 
-    height = len(imageData) // width
-
     group2Start = (height + 7) // 8  # pixel rows in group  1
-    group3Start = (height + 3) // 4  # pixel rows in groups 1...2
-    group4Start = (height + 1) // 2  # pixel rows in groups 1...3
+    group3Start = (height + 3) // 4  # pixel rows in groups 1-2
+    group4Start = (height + 1) // 2  # pixel rows in groups 1-3
 
-    # sy = source pixel row, dy = destination pixel row
-    for dy in range(height):
+    for dy in range(height):  # pixel row destination index
         if dy % 8 == 0:
-            sy = dy // 8
+            yield dy // 8
         elif dy % 8 == 4:
-            sy = group2Start + dy // 8
+            yield group2Start + dy // 8
         elif dy % 4 == 2:
-            sy = group3Start + dy // 4
+            yield group3Start + dy // 4
         else:
-            sy = group4Start + dy // 2
+            yield group4Start + dy // 2
+
+def deinterlace(imageData, width):
+    # deinterlace image data (1 byte/pixel), generate one pixel row per call
+
+    height = len(imageData) // width
+    for sy in get_deinterlace_order(height):  # pixel row source index
         yield imageData[sy*width:(sy+1)*width]
 
 def main():
