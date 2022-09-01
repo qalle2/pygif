@@ -9,16 +9,16 @@ def parse_arguments():
 
     parser.add_argument(
         "-r", "--no-dict-reset", action="store_true",
-        help="Don't reset the LZW dictionary when it fills up. May compress highly repetitive "
-        "images better."
+        help="Don't reset the LZW dictionary when it fills up. May compress "
+        "highly repetitive images better."
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Print more info."
     )
     parser.add_argument(
-        "input_file", help="Raw RGB image file to read. Format: 3 bytes (red, green, blue) per "
-        "pixel; order of pixels: first right, then down; file extension '.data' in GIMP. 256 "
-        "unique colors or less."
+        "input_file", help="Raw RGB image file to read. Format: 3 bytes (red, "
+        "green, blue) per pixel; order of pixels: first right, then down; "
+        "file extension '.data' in GIMP. 256 unique colors or less."
     )
     parser.add_argument(
         "width", type=int, help="Width of input_file in pixels."
@@ -49,11 +49,13 @@ def get_palette(handle):
     return b"".join(sorted(palette))
 
 def raw_image_to_indexed(handle, palette):
-    # convert raw RGB image into indexed data (1 byte/pixel) using palette (RGBRGB...)
+    # convert RGB image into indexed (1 byte/pixel) using palette (RGBRGB...)
 
     pixelCount = handle.seek(0, 2) // 3
     handle.seek(0)
-    rgbToIndex = dict((palette[i*3:(i+1)*3], i) for i in range(len(palette) // 3))
+    rgbToIndex = dict(
+        (palette[i*3:(i+1)*3], i) for i in range(len(palette) // 3)
+    )
     return bytes(rgbToIndex[handle.read(3)] for i in range(pixelCount))
 
 def generate_lzw_codes(palBits, imageData, args):
@@ -62,7 +64,8 @@ def generate_lzw_codes(palBits, imageData, args):
     # imageData: indexed image data (1 byte/pixel)
     # generate:  (code, code_length_in_bits)
 
-    # TODO: find out why this function encodes wolf3.gif and wolf4.gif different from GIMP.
+    # TODO: find out why this function encodes wolf3.gif and wolf4.gif
+    # different from GIMP.
 
     # LZW dictionary (key = LZW entry, value = LZW code)
     # note: doesn't contain clear and end codes, so actual length is len() + 2
@@ -76,8 +79,9 @@ def generate_lzw_codes(palBits, imageData, args):
     yield (2 ** palBits, codeLen)  # clear code
 
     while pos < len(imageData):
-        # find longest entry that's a prefix of remaining input data, and corresponding code
-        # note: [pos:pos+1] instead of [pos:] breaks some decoders, investigate further?
+        # find longest entry that's a prefix of remaining input data, and
+        # corresponding code; TODO: [pos:pos+1] instead of [pos:] breaks some
+        # decoders, investigate further
         entry.clear()
         for byte in imageData[pos:]:
             entry.append(byte)
@@ -93,14 +97,14 @@ def generate_lzw_codes(palBits, imageData, args):
         pos += len(entry)
         if pos < len(imageData):
             if len(lzwDict) < 2 ** 12 - 2:
-                # dictionary not full; add an entry (current entry plus next pixel);
-                # increase code length if necessary
+                # dictionary not full; add entry (current entry plus next
+                # pixel); increase code length if necessary
                 entry.append(imageData[pos])
                 lzwDict[bytes(entry)] = len(lzwDict) + 2
                 if len(lzwDict) > 2 ** codeLen - 2:
                     codeLen += 1
             elif not args.no_dict_reset:
-                # dictionary full; output clear code; reset code length and dictionary
+                # dict. full; output clear code; reset code length & dict.
                 yield (2 ** palBits, codeLen)
                 codeLen = palBits + 1
                 lzwDict = dict((bytes((i,)), i) for i in range(2 ** palBits))
@@ -141,9 +145,9 @@ def generate_gif(palette, imageData, args):
 
     height = len(imageData) // args.width  # image height
 
-    # palette size in bits
-    palBitsGct = max(math.ceil(math.log2(len(palette) // 3)), 1)  # in Global Color Table (1-8)
-    palBitsLzw = max(palBitsGct, 2)                               # in LZW encoding (2-8)
+    # palette size in bits in Global Color Table (1-8) / in LZW encoding (2-8)
+    palBitsGct = max(math.ceil(math.log2(len(palette) // 3)), 1)
+    palBitsLzw = max(palBitsGct, 2)
 
     yield b"GIF87a"  # Header (signature, version)
 
@@ -151,11 +155,11 @@ def generate_gif(palette, imageData, args):
     yield struct.pack(
         "<2H3B",
         args.width, height,           # logical screen width/height
-        0b10000000 | palBitsGct - 1,  # packed fields (Global Color Table present)
+        0b10000000 | palBitsGct - 1,  # packed fields (GCT present)
         0, 0                          # background color index, aspect ratio
     )
 
-    yield palette + (2 ** palBitsGct * 3 - len(palette)) * b"\x00"  # padded Global Color Table
+    yield palette + (2 ** palBitsGct * 3 - len(palette)) * b"\x00"  # pad GCT
 
     # Image Descriptor
     yield struct.pack(
@@ -200,7 +204,8 @@ def main():
 
     if args.verbose:
         print("read {}: {}*{} pixels, {} unique color(s)".format(
-            os.path.basename(args.input_file), args.width, height, len(palette) // 3
+            os.path.basename(args.input_file), args.width, height,
+            len(palette) // 3
         ))
 
     # write output file
