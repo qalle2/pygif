@@ -203,10 +203,10 @@ def main():
         sys.exit("Error reading input file.")
 
     if args.verbose:
-        print("read {}: {}*{} pixels, {} unique color(s)".format(
-            os.path.basename(args.input_file), args.width, height,
-            len(palette) // 3
-        ))
+        print(
+            f"read {os.path.basename(args.input_file)}: {args.width}*{height} "
+            f"pixels, {len(palette)//3} unique color(s)"
+        )
 
     # write output file
     try:
@@ -219,8 +219,9 @@ def main():
         sys.exit("Error writing output file.")
 
     if args.verbose:
-        print("wrote {}: {} bytes; time {:.1f} s".format(
-            os.path.basename(args.output_file), size, time.time() - startTime
-        ))
+        print(
+            f"wrote {os.path.basename(args.output_file)}: {size} bytes, time "
+            f"{time.time()-startTime:.1f} s"
+        )
 
 main()
