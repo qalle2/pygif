@@ -3,6 +3,7 @@
 Table of contents:
 * [gifdec.py](#gifdecpy)
 * [gifenc.py](#gifencpy)
+* [gifstruct.py](#gifstructpy)
 * [Other files](#other-files)
 
 ## gifdec.py
@@ -51,6 +52,39 @@ options:
   -r, --no-dict-reset  Don't reset the LZW dictionary when it fills up. May
                        compress highly repetitive images better.
   -v, --verbose        Print more info.
+```
+
+## gifstruct.py
+Print the high-level structure of a GIF file. Argument: file to read.
+
+Under construction.
+
+Example:
+```
+File: anim.gif
+Version: 89a
+Global Color Table: 4 colors
+At 0x19: Extension:
+    Label: 0xff
+At 0x2c: Extension:
+    Label: 0xf9
+At 0x34: Image Descriptor:
+    width: 29
+    height: 9
+    interlace: False
+    Local Color Table: none
+    palette bit depth in LZW encoding: 2
+    LZW data bytes: 40
+At 0x69: Extension:
+    Label: 0xf9
+At 0x71: Image Descriptor:
+    width: 29
+    height: 9
+    interlace: False
+    Local Color Table: none
+    palette bit depth in LZW encoding: 2
+    LZW data bytes: 46
+At 0xac: Trailer
 ```
 
 ## Other files
