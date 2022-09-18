@@ -1,8 +1,8 @@
 # pygif
 
 Table of contents:
-* [gifdec.py](#gifdec.py)
-* [gifenc.py](#gifenc.py)
+* [gifdec.py](#gifdecpy)
+* [gifenc.py](#gifencpy)
 * [Other files](#other-files)
 
 ## gifdec.py
