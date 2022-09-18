@@ -1,5 +1,10 @@
 # pygif
 
+Table of contents:
+* [gifdec.py](#gifdec.py)
+* [gifenc.py](#gifenc.py)
+* [Other files](#other-files)
+
 ## gifdec.py
 A GIF decoder in pure Python. Notes:
 * supports interlaced images
@@ -47,3 +52,9 @@ options:
                        compress highly repetitive images better.
   -v, --verbose        Print more info.
 ```
+
+## Other files
+* `test-in/*.gif`: test images for the decoder; encoded with GIMP (some images are from *Wolfenstein 3D* and *Doom* by id Software)
+* `test-out/raw-md5.txt`: MD5 hashes for correctly-decoded test images
+* `test-dec.sh`: test the decoder using the test images
+* `test-enc.sh`: test the encoder using the images created by `test-dec.sh`

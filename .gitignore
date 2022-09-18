@@ -1,2 +1,2 @@
-*.data
-*.gif
+test-out/*.data
+test-out/*.gif
