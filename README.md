@@ -57,34 +57,73 @@ options:
 ## gifstruct.py
 Print the high-level structure of a GIF file. Argument: file to read.
 
-Under construction.
-
-Example:
+Example (a looping animated GIF with two frames and a comment):
 ```
-File: anim.gif
-Version: 89a
-Global Color Table: 4 colors
-At 0x19: Extension:
-    Label: 0xff
-At 0x2c: Extension:
-    Label: 0xf9
-At 0x34: Image Descriptor:
+$ python3 gifstruct.py test-in/anim.gif
+Header:
+    file offset: 0
+    version: 89a
+Logical Screen Descriptor:
+    file offset: 6
     width: 29
     height: 9
-    interlace: False
-    Local Color Table: none
-    palette bit depth in LZW encoding: 2
-    LZW data bytes: 40
-At 0x69: Extension:
-    Label: 0xf9
-At 0x71: Image Descriptor:
+    original color resolution in bits per RGB channel: 3
+    pixel aspect ratio in 1/64ths: unknown
+    has Global Color Table: yes
+Global Color Table:
+    file offset: 13
+    colors: 4
+    sorted: no
+    background color index: 2
+Extension:
+    file offset: 25
+    type: Application
+    identifier: NETSCAPE
+    authentication code: 2.0
+Extension:
+    file offset: 44
+    type: Comment
+    data: two frames with the words 'first' and 'second'
+Extension:
+    file offset: 94
+    type: Graphic Control
+    delay time in 1/100ths of a second: 100
+    wait for user input: no
+    transparent color index: none
+    disposal method: unspecified
+Image Descriptor:
+    file offset: 102
+    x position: 0
+    y position: 0
     width: 29
     height: 9
-    interlace: False
-    Local Color Table: none
-    palette bit depth in LZW encoding: 2
-    LZW data bytes: 46
-At 0xac: Trailer
+    interlaced: no
+    has Local Color Table: no
+LZW data:
+    file offset: 112
+    palette bit depth: 2
+    data size: 40
+Extension:
+    file offset: 155
+    type: Graphic Control
+    delay time in 1/100ths of a second: 100
+    wait for user input: no
+    transparent color index: 2
+    disposal method: unspecified
+Image Descriptor:
+    file offset: 163
+    x position: 0
+    y position: 0
+    width: 29
+    height: 9
+    interlaced: no
+    has Local Color Table: no
+LZW data:
+    file offset: 173
+    palette bit depth: 2
+    data size: 46
+Trailer:
+    file offset: 222
 ```
 
 ## Other files

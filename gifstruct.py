@@ -1,46 +1,75 @@
-# print the high-level structure of a GIF file; under construction
+# print the high-level structure of a GIF file
 
 import os, struct, sys
 
-def get_bytes(handle, length):
+# for Graphic Control Extension
+DISPOSAL_METHODS = {
+    0: "unspecified",
+    1: "leave in place",
+    2: "restore to background color",
+    3: "restore to previous",
+}
+
+def error(descr):
+    # print error and exit
+    sys.exit(f"Error: {descr}.")
+
+def printval(descr, value):
+    # print a value with description
+    assert isinstance(value, int) or isinstance(value, str) \
+    or isinstance(value, bytes)
+    if isinstance(value, bool):
+        value = ("no", "yes")[value]
+    elif isinstance(value, bytes):
+        value = value.decode("ascii", errors="backslashreplace")
+    print(4 * " " + f"{descr}: {value}")
+
+def printoffs(handle, adjust=0):
+    # print file offset
+    assert isinstance(adjust, int)
+    printval("file offset", handle.tell() + adjust)
+
+def getbytes(handle, length):
     # read bytes from file
+    assert isinstance(length, int)
     data = handle.read(length)
     if len(data) < length:
-        sys.exit("Unexpected end of file.")
+        error("unexpected end of file")
     return data
 
-def generate_subblocks(handle):
+def get_subblocks(handle):
     # generate data from GIF subblocks
-    sbSize = get_bytes(handle, 1)[0]  # subblock size
+    sbSize = getbytes(handle, 1)[0]  # subblock size
     while sbSize:
-        chunk = get_bytes(handle, sbSize + 1)  # subblock & size of next one
+        chunk = getbytes(handle, sbSize + 1)  # subblock & size of next one
         yield chunk[:-1]
         sbSize = chunk[-1]
 
 # -----------------------------------------------------------------------------
 
 def read_header(handle):
-    # read Header, Logical Screen Descriptor and Global Color Table from
-    # current file position; return a dict
+    # read Header from current file position; return file version
 
-    # Header
-    (id_, version) = struct.unpack("3s3s", get_bytes(handle, 6))
+    (id_, version) = struct.unpack("3s3s", getbytes(handle, 6))
     if id_ != b"GIF":
-        sys.exit("Not a GIF file.")
+        error("not a GIF file")
+    return version
 
-    # Logical Screen Descriptor (TODO: get more info)
-    packedFields = struct.unpack("4xB2x", get_bytes(handle, 7))[0]
-    if packedFields & 0b10000000:
-        # has Global Color Table; skip it
-        gctBits = (packedFields & 0b00000111) + 1
-        get_bytes(handle, 2**gctBits * 3)
-    else:
-        # no Global Color Table
-        gctBits = 0
+def read_lsd(handle):
+    # read Logical Screen Descriptor from current file position; return a dict
+
+    (width, height, packedFields, bgIndex, aspectRatio) \
+    = struct.unpack("<2H3B", getbytes(handle, 7))
 
     return {
-        "version": version,
-        "gctBits": gctBits,
+        "width":           width,
+        "height":          height,
+        "gctFlag":         bool(packedFields & 0b10000000),
+        "colorResolution": ((packedFields >> 4) & 0b00000111) + 1,
+        "sortFlag":        bool(packedFields & 0b00001000),
+        "gctSize":         (packedFields & 0b00000111) + 1,
+        "bgIndex":         bgIndex,
+        "aspectRatio":     aspectRatio,
     }
 
 def read_image(handle):
@@ -48,86 +77,131 @@ def read_image(handle):
     # handle position must be at first byte after ',' of Image Descriptor
     # return a dict
 
-    # TODO: get more info
-    (width, height, miscFields) = struct.unpack("<4x2HB", get_bytes(handle, 9))
-    if min(width, height) == 0:
-        sys.exit("Image area is zero.")
-
-    if miscFields & 0b10000000:
-        # has Local Color Table
-        lctBits = (miscFields & 0b00000111) + 1
-        get_bytes(handle, 2 ** lctBits * 3)  # skip bytes
-    else:
-        # no Local Color Table
-        lctBits = 0
-
-    lzwPalBits = get_bytes(handle, 1)[0]
-    lzwDataLen = sum(len(d) for d in generate_subblocks(handle))
+    (x, y, width, height, packedFields) \
+    = struct.unpack("<4HB", getbytes(handle, 9))
 
     return {
-        "width":      width,
-        "height":     height,
-        "interlace":  bool(miscFields & 0b01000000),
-        "lctBits":    lctBits,
-        "lzwPalBits": lzwPalBits,
-        "lzwDataLen": lzwDataLen,
+        "x":             x,
+        "y":             y,
+        "width":         width,
+        "height":        height,
+        "lctFlag":       bool(packedFields & 0b10000000),
+        "interlaceFlag": bool(packedFields & 0b01000000),
+        "sortFlag":      bool(packedFields & 0b00100000),
+        "lctSize":       (packedFields & 0b00000111) + 1,
     }
 
 def read_extension_block(handle):
     # read Extension block in GIF file;
     # handle position must be at first byte after Extension Introducer ('!')
 
-    # TODO: print more info
-    label = get_bytes(handle, 1)[0]
-    print(f"    Label: 0x{label:02x}")
-    if label in (0x01, 0xf9, 0xff):
-        # Plain Text Extension, Graphic Control Extension, Application Ext.
-        get_bytes(handle, get_bytes(handle, 1)[0])  # skip bytes
-        all(generate_subblocks(handle))  # skip subblocks
+    label = getbytes(handle, 1)[0]
+    if label == 0x01:
+        # TODO (low priority): print more info
+        printval("type", "Plain Text")
+        getbytes(handle, 13)  # skip bytes
+        list(get_subblocks(handle))  # skip subblocks
+    elif label == 0xf9:
+        printval("type", "Graphic Control")
+        (packedFields, delayTime, transparentIndex) \
+        = struct.unpack("<xBHBx", getbytes(handle, 6))
+        disposal = (packedFields & 0b00011100) >> 2
+        userInput = bool(packedFields & 0b00000010)
+        transparentFlag = bool(packedFields & 0b00000001)
+        printval(
+            "delay time in 1/100ths of a second",
+            (delayTime if delayTime else "none")
+        )
+        printval("wait for user input", userInput)
+        printval(
+            "transparent color index",
+            (transparentIndex if transparentFlag else "none")
+        )
+        printval("disposal method", DISPOSAL_METHODS.get(disposal, "?"))
     elif label == 0xfe:
-        # Comment Extension
-        all(generate_subblocks(handle))  # skip subblocks
+        printval("type", "Comment")
+        data = b"".join(get_subblocks(handle))
+        printval("data", data)
+    elif label == 0xff:
+        # TODO (low priority): print more info
+        printval("type", "Application")
+        (identifier, authCode) = struct.unpack("x8s3s", getbytes(handle, 12))
+        printval("identifier", identifier)
+        printval("authentication code", authCode)
+        list(get_subblocks(handle))  # skip subblocks
     else:
-        sys.exit("Invalid Extension label.")
+        error("unknown extension type")
 
 def read_file(handle):
     handle.seek(0)
-    fileInfo = read_header(handle)
-    print(
-        "Version:",
-        fileInfo["version"].decode("ascii", errors="backslashreplace")
+
+    print("Header:")
+    printoffs(handle)
+    version = read_header(handle)
+    printval("version", version)
+
+    print("Logical Screen Descriptor:")
+    printoffs(handle)
+    lsdInfo = read_lsd(handle)
+    printval("width", lsdInfo["width"])
+    printval("height", lsdInfo["height"])
+    printval(
+        "original color resolution in bits per RGB channel",
+        lsdInfo["colorResolution"]
     )
-    print("Global Color Table:",
-        f"{2**fileInfo['gctBits']} colors" if fileInfo["gctBits"] else "none"
+    printval(
+        "pixel aspect ratio in 1/64ths",
+        (lsdInfo["aspectRatio"] + 15) if lsdInfo["aspectRatio"] else "unknown"
     )
+    printval("has Global Color Table", lsdInfo["gctFlag"])
+
+    if lsdInfo["gctFlag"]:
+        print("Global Color Table:")
+        printoffs(handle)
+        printval("colors", 2 ** lsdInfo["gctSize"])
+        printval("sorted", lsdInfo["sortFlag"])
+        printval("background color index", lsdInfo["bgIndex"])
+        getbytes(handle, 2 ** lsdInfo["gctSize"] * 3)  # skip it
 
     # read rest of blocks
     while True:
-        print(f"At 0x{handle.tell():x}: ", end="")
-        blockType = get_bytes(handle, 1)
+        blockType = getbytes(handle, 1)
         if blockType == b",":
-            print(f"Image Descriptor:")
+            print("Image Descriptor:")
+            printoffs(handle, -1)
             imageInfo = read_image(handle)
-            print("    width:", imageInfo["width"])
-            print("    height:", imageInfo["height"])
-            print("    interlace:", imageInfo["interlace"])
-            print("    Local Color Table:",
-                f"{2**fileInfo['lctBits']} colors" if imageInfo["lctBits"]
-                else "none"
-            )
-            print(
-                "    palette bit depth in LZW encoding:",
-                imageInfo["lzwPalBits"]
-            )
-            print("    LZW data bytes:", imageInfo["lzwDataLen"])
+            printval("x position", imageInfo["x"])
+            printval("y position", imageInfo["y"])
+            printval("width", imageInfo["width"])
+            printval("height", imageInfo["height"])
+            printval("interlaced", imageInfo["interlaceFlag"])
+            printval("has Local Color Table", imageInfo["lctFlag"])
+
+            if imageInfo["lctFlag"]:
+                print(f"Local Color Table:")
+                printoffs(handle)
+                printval("colors", 2 ** imageInfo["lctSize"])
+                printval("sorted", imageInfo["sortFlag"])
+                getbytes(handle, 2 ** imageInfo["lctSize"] * 3)  # skip it
+
+            print("LZW data:")
+            # TODO (low priority): print more info
+            printoffs(handle)
+            lzwPalBits = getbytes(handle, 1)[0]
+            lzwDataLen = sum(len(d) for d in get_subblocks(handle))
+            printval("palette bit depth", lzwPalBits)
+            printval("data size", lzwDataLen)
         elif blockType == b"!":
-            print(f"Extension:")
+            print("Extension:")
+            printoffs(handle, -1)
             read_extension_block(handle)
         elif blockType == b";":
-            print(f"Trailer")
+            print("Trailer:")
+            printoffs(handle, -1)
             break
         else:
-            sys.exit(f"invalid block type 0x{blockType[0]:02x}")
+            print()
+            error("unknown block type")
 
 def main():
     # parse command line argument
@@ -138,14 +212,12 @@ def main():
         )
     filename = sys.argv[1]
     if not os.path.isfile(filename):
-        sys.exit("Input file not found.")
-
-    print("File:", os.path.basename(filename))
+        error("input file not found")
 
     try:
         with open(filename, "rb") as handle:
             read_file(handle)
     except OSError:
-        sys.exit("Error reading input file.")
+        error("could not read input file")
 
 main()
