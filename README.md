@@ -1,5 +1,7 @@
 # pygif
 
+GIF utilities in Python. Not to be confused with [the other pygif](https://github.com/robert-ancell/pygif).
+
 Table of contents:
 * [gifdec.py](#gifdecpy)
 * [gifenc.py](#gifencpy)

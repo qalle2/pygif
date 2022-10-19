@@ -200,7 +200,6 @@ def read_file(handle):
             printoffs(handle, -1)
             break
         else:
-            print()
             error("unknown block type")
 
 def main():
