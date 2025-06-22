@@ -1,6 +1,7 @@
 # pygif
-
 GIF utilities in Python. Not to be confused with [the other pygif](https://github.com/robert-ancell/pygif).
+
+*Note: This project has been moved to [Codeberg](https://codeberg.org/qalle/purepygif). This version will no longer be updated.*
 
 Table of contents:
 * [gifdec.py](#gifdecpy)
